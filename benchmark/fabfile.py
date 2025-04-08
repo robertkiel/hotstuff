@@ -14,6 +14,7 @@ def local(ctx):
     bench_params = {
         "faults": 0,
         "nodes": 4,
+        "epochs": 2,
         "rate": 1_000,
         "tx_size": 512,
         "duration": 20,
@@ -31,6 +32,7 @@ def local(ctx):
             "max_batch_delay": 10,
         },
     }
+    print('here')
     try:
         ret = LocalBench(bench_params, node_params).run(debug=True).result()
         print(ret)
