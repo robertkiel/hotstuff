@@ -1,6 +1,7 @@
-use crate::config::{Committee, Stake};
+use crate::config::{Committees, Stake};
 use crate::consensus::{ConsensusMessage, Round};
 use crate::messages::{Block, QC, TC};
+use crate::EpochNumber;
 use bytes::Bytes;
 use crypto::{Digest, PublicKey, SignatureService};
 use futures::stream::futures_unordered::FuturesUnordered;
@@ -12,13 +13,14 @@ use tokio::sync::mpsc::{Receiver, Sender};
 
 #[derive(Debug)]
 pub enum ProposerMessage {
-    Make(Round, QC, Option<TC>),
+    Make(EpochNumber, Round, QC, Option<TC>),
+    MakeEpochChange(EpochNumber, Round, QC, Option<TC>),
     Cleanup(Vec<Digest>),
 }
 
 pub struct Proposer {
     name: PublicKey,
-    committee: Committee,
+    committees: Committees,
     signature_service: SignatureService,
     rx_mempool: Receiver<Digest>,
     rx_message: Receiver<ProposerMessage>,
@@ -30,7 +32,7 @@ pub struct Proposer {
 impl Proposer {
     pub fn spawn(
         name: PublicKey,
-        committee: Committee,
+        committees: Committees,
         signature_service: SignatureService,
         rx_mempool: Receiver<Digest>,
         rx_message: Receiver<ProposerMessage>,
@@ -39,7 +41,7 @@ impl Proposer {
         tokio::spawn(async move {
             Self {
                 name,
-                committee,
+                committees,
                 signature_service,
                 rx_mempool,
                 rx_message,
@@ -58,7 +60,14 @@ impl Proposer {
         deliver
     }
 
-    async fn make_block(&mut self, round: Round, qc: QC, tc: Option<TC>) {
+    async fn make_block(
+        &mut self,
+        epoch: EpochNumber,
+        round: Round,
+        qc: QC,
+        tc: Option<TC>,
+        end_epoch: bool,
+    ) {
         // Generate a new block.
         let block = Block::new(
             qc,
@@ -66,6 +75,8 @@ impl Proposer {
             self.name,
             round,
             /* payload */ self.buffer.drain().collect(),
+            epoch,
+            end_epoch,
             self.signature_service.clone(),
         )
         .await;
@@ -81,10 +92,14 @@ impl Proposer {
         }
         debug!("Created {:?}", block);
 
+        let block_committee = self
+            .committees
+            .get_committe_for_epoch(&epoch)
+            .expect("Missing committee for epoch {epoch}");
+
         // Broadcast our new block.
         debug!("Broadcasting {:?}", block);
-        let (names, addresses): (Vec<_>, _) = self
-            .committee
+        let (names, addresses): (Vec<_>, _) = block_committee
             .broadcast_addresses(&self.name)
             .iter()
             .cloned()
@@ -107,15 +122,15 @@ impl Proposer {
             .into_iter()
             .zip(handles.into_iter())
             .map(|(name, handler)| {
-                let stake = self.committee.stake(&name);
+                let stake = block_committee.stake(&name);
                 Self::waiter(handler, stake)
             })
             .collect();
 
-        let mut total_stake = self.committee.stake(&self.name);
+        let mut total_stake = block_committee.stake(&self.name);
         while let Some(stake) = wait_for_quorum.next().await {
             total_stake += stake;
-            if total_stake >= self.committee.quorum_threshold() {
+            if total_stake >= block_committee.quorum_threshold() {
                 break;
             }
         }
@@ -130,7 +145,8 @@ impl Proposer {
                     //}
                 },
                 Some(message) = self.rx_message.recv() => match message {
-                    ProposerMessage::Make(round, qc, tc) => self.make_block(round, qc, tc).await,
+                    ProposerMessage::Make(epoch, round, qc, tc) => self.make_block(epoch,round, qc, tc, false).await,
+                    ProposerMessage::MakeEpochChange(epoch, round, qc, tc) => self.make_block(epoch, round, qc, tc, true).await,
                     ProposerMessage::Cleanup(digests) => {
                         for x in &digests {
                             self.buffer.remove(x);

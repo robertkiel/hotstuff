@@ -1,5 +1,5 @@
 use crate::aggregator::Aggregator;
-use crate::config::Committee;
+use crate::config::Committees;
 use crate::consensus::{ConsensusMessage, Round};
 use crate::error::{ConsensusError, ConsensusResult};
 use crate::leader::LeaderElector;
@@ -8,6 +8,7 @@ use crate::messages::{Block, Timeout, Vote, QC, TC};
 use crate::proposer::ProposerMessage;
 use crate::synchronizer::Synchronizer;
 use crate::timer::Timer;
+use crate::EpochNumber;
 use async_recursion::async_recursion;
 use bytes::Bytes;
 use crypto::Hash as _;
@@ -25,7 +26,8 @@ pub mod core_tests;
 
 pub struct Core {
     name: PublicKey,
-    committee: Committee,
+    committees: Committees,
+    epoch: EpochNumber,
     store: Store,
     signature_service: SignatureService,
     leader_elector: LeaderElector,
@@ -48,7 +50,8 @@ impl Core {
     #[allow(clippy::too_many_arguments)]
     pub fn spawn(
         name: PublicKey,
-        committee: Committee,
+        committees: Committees,
+        epoch: EpochNumber,
         signature_service: SignatureService,
         store: Store,
         leader_elector: LeaderElector,
@@ -63,7 +66,8 @@ impl Core {
         tokio::spawn(async move {
             Self {
                 name,
-                committee: committee.clone(),
+                committees: committees.clone(),
+                epoch,
                 signature_service,
                 store,
                 leader_elector,
@@ -78,7 +82,7 @@ impl Core {
                 last_committed_round: 0,
                 high_qc: QC::genesis(),
                 timer: Timer::new(timeout_delay),
-                aggregator: Aggregator::new(committee),
+                aggregator: Aggregator::new(committees),
                 network: SimpleSender::new(),
             }
             .run()
@@ -171,6 +175,7 @@ impl Core {
         // Make a timeout message.
         let timeout = Timeout::new(
             self.high_qc.clone(),
+            self.epoch,
             self.round,
             self.name,
             self.signature_service.clone(),
@@ -181,10 +186,14 @@ impl Core {
         // Reset the timer.
         self.timer.reset();
 
+        let timeout_committee = self
+            .committees
+            .get_committe_for_epoch(&self.epoch)
+            .ok_or(ConsensusError::UnknownCommittee(self.epoch))?;
+
         // Broadcast the timeout message.
         debug!("Broadcasting {:?}", timeout);
-        let addresses = self
-            .committee
+        let addresses = timeout_committee
             .broadcast_addresses(&self.name)
             .into_iter()
             .map(|(_, x)| x)
@@ -207,7 +216,7 @@ impl Core {
         }
 
         // Ensure the vote is well formed.
-        vote.verify(&self.committee)?;
+        vote.verify(&self.committees)?;
 
         // Add the new vote to our aggregator and see if we have a quorum.
         if let Some(qc) = self.aggregator.add_vote(vote.clone())? {
@@ -217,7 +226,7 @@ impl Core {
             self.process_qc(&qc).await;
 
             // Make a new block if we are the next leader.
-            if self.name == self.leader_elector.get_leader(self.round) {
+            if self.name == self.leader_elector.get_leader(self.epoch, self.round) {
                 self.generate_proposal(None).await;
             }
         }
@@ -231,7 +240,7 @@ impl Core {
         }
 
         // Ensure the timeout is well formed.
-        timeout.verify(&self.committee)?;
+        timeout.verify(&self.committees)?;
 
         // Process the QC embedded in the timeout.
         self.process_qc(&timeout.high_qc).await;
@@ -240,13 +249,17 @@ impl Core {
         if let Some(tc) = self.aggregator.add_timeout(timeout.clone())? {
             debug!("Assembled {:?}", tc);
 
+            let timeout_committee = self
+                .committees
+                .get_committe_for_epoch(&self.epoch)
+                .ok_or(ConsensusError::UnknownCommittee(self.epoch))?;
+
             // Try to advance the round.
             self.advance_round(tc.round).await;
 
             // Broadcast the TC.
             debug!("Broadcasting {:?}", tc);
-            let addresses = self
-                .committee
+            let addresses = timeout_committee
                 .broadcast_addresses(&self.name)
                 .into_iter()
                 .map(|(_, x)| x)
@@ -258,7 +271,7 @@ impl Core {
                 .await;
 
             // Make a new block if we are the next leader.
-            if self.name == self.leader_elector.get_leader(self.round) {
+            if self.name == self.leader_elector.get_leader(self.epoch, self.round) {
                 self.generate_proposal(Some(tc)).await;
             }
         }
@@ -276,13 +289,18 @@ impl Core {
         debug!("Moved to round {}", self.round);
 
         // Cleanup the vote aggregator.
-        self.aggregator.cleanup(&self.round);
+        self.aggregator.cleanup(&self.epoch, &self.round);
     }
 
     #[async_recursion]
     async fn generate_proposal(&mut self, tc: Option<TC>) {
         self.tx_proposer
-            .send(ProposerMessage::Make(self.round, self.high_qc.clone(), tc))
+            .send(ProposerMessage::Make(
+                self.epoch,
+                self.round,
+                self.high_qc.clone(),
+                tc,
+            ))
             .await
             .expect("Failed to send message to proposer");
     }
@@ -323,6 +341,9 @@ impl Core {
             }
         };
 
+        // Last block concluded last epoch, so current epoch must be old epoch + 1.
+        if b1.epoch_concluded && block.epoch != b1.epoch + 1 {}
+
         // Store the block only if we have already processed all its ancestors.
         self.store_block(block).await;
 
@@ -345,13 +366,17 @@ impl Core {
         // See if we can vote for this block.
         if let Some(vote) = self.make_vote(block).await {
             debug!("Created {:?}", vote);
-            let next_leader = self.leader_elector.get_leader(self.round + 1);
+            let next_leader = self.leader_elector.get_leader(self.epoch, self.round + 1);
             if next_leader == self.name {
                 self.handle_vote(&vote).await?;
             } else {
+                let epoch_committee = self
+                    .committees
+                    .get_committe_for_epoch(&self.epoch)
+                    .expect("Missing committee for epoch {epoch}");
+
                 debug!("Sending {:?} to {}", vote, next_leader);
-                let address = self
-                    .committee
+                let address = epoch_committee
                     .address(&next_leader)
                     .expect("The next leader is not in the committee");
                 let message = bincode::serialize(&ConsensusMessage::Vote(vote))
@@ -367,7 +392,7 @@ impl Core {
 
         // Ensure the block proposer is the right leader for the round.
         ensure!(
-            block.author == self.leader_elector.get_leader(block.round),
+            block.author == self.leader_elector.get_leader(block.epoch, block.round),
             ConsensusError::WrongLeader {
                 digest,
                 leader: block.author,
@@ -376,7 +401,7 @@ impl Core {
         );
 
         // Check the block is correctly formed.
-        block.verify(&self.committee)?;
+        block.verify(&self.committees)?;
 
         // Process the QC. This may allow us to advance round.
         self.process_qc(&block.qc).await;
@@ -398,12 +423,12 @@ impl Core {
     }
 
     async fn handle_tc(&mut self, tc: TC) -> ConsensusResult<()> {
-        tc.verify(&self.committee)?;
+        tc.verify(&self.committees)?;
         if tc.round < self.round {
             return Ok(());
         }
         self.advance_round(tc.round).await;
-        if self.name == self.leader_elector.get_leader(self.round) {
+        if self.name == self.leader_elector.get_leader(self.epoch, self.round) {
             self.generate_proposal(Some(tc)).await;
         }
         Ok(())
@@ -413,7 +438,7 @@ impl Core {
         // Upon booting, generate the very first block (if we are the leader).
         // Also, schedule a timer in case we don't hear from the leader.
         self.timer.reset();
-        if self.name == self.leader_elector.get_leader(self.round) {
+        if self.name == self.leader_elector.get_leader(self.epoch, self.round) {
             self.generate_proposal(None).await;
         }
 

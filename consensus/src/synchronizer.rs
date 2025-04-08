@@ -1,4 +1,4 @@
-use crate::config::Committee;
+use crate::config::{epoch_number_from_bytes, Committees};
 use crate::consensus::{ConsensusMessage, CHANNEL_CAPACITY};
 use crate::error::ConsensusResult;
 use crate::messages::{Block, QC};
@@ -11,7 +11,7 @@ use log::{debug, error};
 use network::SimpleSender;
 use std::collections::{HashMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
-use store::Store;
+use store::{Store, EPOCH_KEY};
 use tokio::sync::mpsc::{channel, Receiver, Sender};
 use tokio::time::{sleep, Duration, Instant};
 
@@ -29,7 +29,7 @@ pub struct Synchronizer {
 impl Synchronizer {
     pub fn new(
         name: PublicKey,
-        committee: Committee,
+        committees: Committees,
         store: Store,
         tx_loopback: Sender<Block>,
         sync_retry_delay: u64,
@@ -50,6 +50,7 @@ impl Synchronizer {
                     Some(block) = rx_inner.recv() => {
                         if pending.insert(block.digest()) {
                             let parent = block.parent().clone();
+                            let block_epoch = block.epoch;
                             let author = block.author;
                             let fut = Self::waiter(store_copy.clone(), parent.clone(), block);
                             waiting.push(fut);
@@ -61,7 +62,9 @@ impl Synchronizer {
                                     .expect("Failed to measure time")
                                     .as_millis();
                                 requests.insert(parent.clone(), now);
-                                let address = committee
+                                let address = committees
+                                    .get_committe_for_epoch(&block_epoch)
+                                    .expect("Valid block has no committee")
                                     .address(&author)
                                     .expect("Author of valid block is not in the committee");
                                 let message = ConsensusMessage::SyncRequest(parent, name);
@@ -88,9 +91,14 @@ impl Synchronizer {
                                 .duration_since(UNIX_EPOCH)
                                 .expect("Failed to measure time")
                                 .as_millis();
+
+                            let epoch = epoch_number_from_bytes(store_copy.clone().read(EPOCH_KEY.into()).await.expect("Failed to read from store").expect("Missing epoch key in store").as_slice());
+
                             if timestamp + (sync_retry_delay as u128) < now {
                                 debug!("Requesting sync for block {} (retry)", digest);
-                                let addresses = committee
+                                let addresses = committees
+                                    .get_committe_for_epoch(&epoch)
+                                    .expect("Node is not part of the consensus epoch")
                                     .broadcast_addresses(&name)
                                     .into_iter()
                                     .map(|(_, x)| x)

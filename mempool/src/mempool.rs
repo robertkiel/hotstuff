@@ -1,9 +1,10 @@
 use crate::batch_maker::{Batch, BatchMaker, Transaction};
-use crate::config::{Committee, Parameters};
+use crate::config::{Committees, Parameters};
 use crate::helper::Helper;
 use crate::processor::{Processor, SerializedBatchMessage};
 use crate::quorum_waiter::QuorumWaiter;
 use crate::synchronizer::Synchronizer;
+use crate::EpochNumber;
 use async_trait::async_trait;
 use bytes::Bytes;
 use crypto::{Digest, PublicKey};
@@ -45,7 +46,7 @@ pub struct Mempool {
     /// The public key of this authority.
     name: PublicKey,
     /// The committee information.
-    committee: Committee,
+    committees: Committees,
     /// The configuration parameters.
     parameters: Parameters,
     /// The persistent storage.
@@ -57,8 +58,9 @@ pub struct Mempool {
 impl Mempool {
     pub fn spawn(
         name: PublicKey,
-        committee: Committee,
+        committees: Committees,
         parameters: Parameters,
+        epoch: EpochNumber,
         store: Store,
         rx_consensus: Receiver<ConsensusMempoolMessage>,
         tx_consensus: Sender<Digest>,
@@ -69,7 +71,7 @@ impl Mempool {
         // Define a mempool instance.
         let mempool = Self {
             name,
-            committee,
+            committees,
             parameters,
             store,
             tx_consensus,
@@ -77,13 +79,15 @@ impl Mempool {
 
         // Spawn all mempool tasks.
         mempool.handle_consensus_messages(rx_consensus);
-        mempool.handle_clients_transactions();
-        mempool.handle_mempool_messages();
+        mempool.handle_clients_transactions(&epoch);
+        mempool.handle_mempool_messages(&epoch);
 
         info!(
             "Mempool successfully booted on {}",
             mempool
-                .committee
+                .committees
+                .get_committe_for_epoch(&1)
+                .expect("Cannot get committee for first epoch")
                 .mempool_address(&mempool.name)
                 .expect("Our public key is not in the committee")
                 .ip()
@@ -96,7 +100,7 @@ impl Mempool {
         // it receives from the consensus (which are mainly notifications that we are out of sync).
         Synchronizer::spawn(
             self.name,
-            self.committee.clone(),
+            self.committees.clone(),
             self.store.clone(),
             self.parameters.gc_depth,
             self.parameters.sync_retry_delay,
@@ -106,14 +110,17 @@ impl Mempool {
     }
 
     /// Spawn all tasks responsible to handle clients transactions.
-    fn handle_clients_transactions(&self) {
+    fn handle_clients_transactions(&self, epoch: &EpochNumber) {
         let (tx_batch_maker, rx_batch_maker) = channel(CHANNEL_CAPACITY);
         let (tx_quorum_waiter, rx_quorum_waiter) = channel(CHANNEL_CAPACITY);
         let (tx_processor, rx_processor) = channel(CHANNEL_CAPACITY);
 
+        let initial_committee = self
+            .committees
+            .get_committe_for_epoch(&epoch)
+            .expect("Node is not part of mempool committee");
         // We first receive clients' transactions from the network.
-        let mut address = self
-            .committee
+        let mut address = initial_committee
             .transactions_address(&self.name)
             .expect("Our public key is not in the committee");
         address.set_ip("0.0.0.0".parse().unwrap());
@@ -131,14 +138,14 @@ impl Mempool {
             /* rx_transaction */ rx_batch_maker,
             /* tx_message */ tx_quorum_waiter,
             /* mempool_addresses */
-            self.committee.broadcast_addresses(&self.name),
+            initial_committee.broadcast_addresses(&self.name),
         );
 
         // The `QuorumWaiter` waits for 2f authorities to acknowledge reception of the batch. It then forwards
         // the batch to the `Processor`.
         QuorumWaiter::spawn(
-            self.committee.clone(),
-            /* stake */ self.committee.stake(&self.name),
+            initial_committee.clone(),
+            /* stake */ initial_committee.stake(&self.name),
             /* rx_message */ rx_quorum_waiter,
             /* tx_batch */ tx_processor,
         );
@@ -154,13 +161,17 @@ impl Mempool {
     }
 
     /// Spawn all tasks responsible to handle messages from other mempools.
-    fn handle_mempool_messages(&self) {
+    fn handle_mempool_messages(&self, epoch: &EpochNumber) {
         let (tx_helper, rx_helper) = channel(CHANNEL_CAPACITY);
         let (tx_processor, rx_processor) = channel(CHANNEL_CAPACITY);
 
+        let initial_committee = self
+            .committees
+            .get_committe_for_epoch(epoch)
+            .expect("Node is not part of mempool committee");
+
         // Receive incoming messages from other mempools.
-        let mut address = self
-            .committee
+        let mut address = initial_committee
             .mempool_address(&self.name)
             .expect("Our public key is not in the committee");
         address.set_ip("0.0.0.0".parse().unwrap());
@@ -175,7 +186,7 @@ impl Mempool {
 
         // The `Helper` is dedicated to reply to batch requests from other mempools.
         Helper::spawn(
-            self.committee.clone(),
+            self.committees.clone(),
             self.store.clone(),
             /* rx_request */ rx_helper,
         );

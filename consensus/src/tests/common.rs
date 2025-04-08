@@ -1,4 +1,4 @@
-use crate::config::Committee;
+use crate::config::Committees;
 use crate::consensus::Round;
 use crate::messages::{Block, Timeout, Vote, QC};
 use bytes::Bytes;
@@ -20,8 +20,8 @@ pub fn keys() -> Vec<(PublicKey, SecretKey)> {
 }
 
 // Fixture.
-pub fn committee() -> Committee {
-    Committee::new(
+pub fn committee() -> Committees {
+    Committees::new(
         keys()
             .into_iter()
             .enumerate()
@@ -36,7 +36,7 @@ pub fn committee() -> Committee {
 }
 
 // Fixture.
-pub fn committee_with_base_port(base_port: u16) -> Committee {
+pub fn committee_with_base_port(base_port: u16) -> Committees {
     let mut committee = committee();
     for authority in committee.authorities.values_mut() {
         let port = authority.address.port();

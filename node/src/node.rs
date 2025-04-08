@@ -1,10 +1,10 @@
 use crate::config::Export as _;
-use crate::config::{Committee, ConfigError, Parameters, Secret};
+use crate::config::{Committees, ConfigError, Parameters, Secret};
 use consensus::{Block, Consensus};
 use crypto::SignatureService;
 use log::info;
-use mempool::Mempool;
-use store::Store;
+use mempool::{epoch_number_from_bytes, Mempool};
+use store::{Store, EPOCH_KEY};
 use tokio::sync::mpsc::{channel, Receiver};
 
 /// The default channel capacity for this module.
@@ -26,7 +26,7 @@ impl Node {
         let (tx_mempool_to_consensus, rx_mempool_to_consensus) = channel(CHANNEL_CAPACITY);
 
         // Read the committee and secret key from file.
-        let committee = Committee::read(committee_file)?;
+        let committee = Committees::read(committee_file)?;
         let secret = Secret::read(key_file)?;
         let name = secret.name;
         let secret_key = secret.secret;
@@ -38,7 +38,22 @@ impl Node {
         };
 
         // Make the data store.
-        let store = Store::new(store_path).expect("Failed to create store");
+        let mut store = Store::new(store_path).expect("Failed to create store");
+
+        let epoch = match store
+            .read(EPOCH_KEY.into())
+            .await
+            .expect("Failed to read from store")
+        {
+            Some(raw_epoch) => epoch_number_from_bytes(raw_epoch.as_slice()),
+            None => {
+                info!("No epoch found in store. Setting epoch to 1");
+                store
+                    .write(EPOCH_KEY.into(), (1u128.to_be_bytes()).into())
+                    .await;
+                1
+            }
+        };
 
         // Run the signature service.
         let signature_service = SignatureService::new(secret_key);
@@ -48,6 +63,7 @@ impl Node {
             name,
             committee.mempool,
             parameters.mempool,
+            epoch,
             store.clone(),
             rx_consensus_to_mempool,
             tx_mempool_to_consensus,
@@ -57,6 +73,7 @@ impl Node {
         Consensus::spawn(
             name,
             committee.consensus,
+            epoch,
             parameters.consensus,
             signature_service,
             store,

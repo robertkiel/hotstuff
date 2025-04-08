@@ -1,5 +1,5 @@
 use crypto::PublicKey;
-use log::info;
+use log::{info, warn};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -45,6 +45,14 @@ impl Parameters {
 }
 
 pub type EpochNumber = u128;
+
+pub fn epoch_number_from_bytes(bytes: &[u8]) -> EpochNumber {
+    let mut epoch = [0u8; (EpochNumber::BITS / 8) as usize];
+    epoch.clone_from_slice(bytes);
+
+    EpochNumber::from_be_bytes(epoch)
+}
+
 pub type Stake = u32;
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -111,5 +119,29 @@ impl Committee {
             .filter(|(name, _)| name != &myself)
             .map(|(name, x)| (*name, x.mempool_address))
             .collect()
+    }
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+pub struct Committees {
+    pub committees: HashMap<EpochNumber, Committee>,
+}
+
+impl Committees {
+    pub fn new() -> Self {
+        Self {
+            committees: Default::default(),
+        }
+    }
+
+    pub fn add_committe_for_epoch(&mut self, committee: Committee, epoch: EpochNumber) {
+        if self.committees.insert(epoch, committee).is_some() {
+            warn!("Replacing existing mempool committee for epoch {epoch}")
+        }
+    }
+
+    pub fn get_committe_for_epoch(&self, epoch: &EpochNumber) -> Option<Committee> {
+        // TODO: think of a generic way to assign committees for epochs
+        self.committees.get(&epoch).map(|c| c.to_owned())
     }
 }

@@ -1,4 +1,4 @@
-use crate::config::Committee;
+use crate::config::{Committees, EpochNumber};
 use crate::consensus::Round;
 use crate::error::{ConsensusError, ConsensusResult};
 use crypto::{Digest, Hash, PublicKey, Signature, SignatureService};
@@ -21,6 +21,8 @@ pub struct Block {
     pub round: Round,
     pub payload: Vec<Digest>,
     pub signature: Signature,
+    pub epoch: EpochNumber,
+    pub epoch_concluded: bool,
 }
 
 impl Block {
@@ -30,6 +32,8 @@ impl Block {
         author: PublicKey,
         round: Round,
         payload: Vec<Digest>,
+        epoch: EpochNumber,
+        epoch_concluded: bool,
         mut signature_service: SignatureService,
     ) -> Self {
         let block = Self {
@@ -38,6 +42,8 @@ impl Block {
             author,
             round,
             payload,
+            epoch,
+            epoch_concluded,
             signature: Signature::default(),
         };
         let signature = signature_service.request_signature(block.digest()).await;
@@ -52,9 +58,13 @@ impl Block {
         &self.qc.hash
     }
 
-    pub fn verify(&self, committee: &Committee) -> ConsensusResult<()> {
+    pub fn verify(&self, committees: &Committees) -> ConsensusResult<()> {
+        let block_committee = committees
+            .get_committe_for_epoch(&self.epoch)
+            .ok_or(ConsensusError::UnknownCommittee(self.epoch))?;
+
         // Ensure the authority has voting rights.
-        let voting_rights = committee.stake(&self.author);
+        let voting_rights = block_committee.stake(&self.author);
         ensure!(
             voting_rights > 0,
             ConsensusError::UnknownAuthority(self.author)
@@ -65,12 +75,17 @@ impl Block {
 
         // Check the embedded QC.
         if self.qc != QC::genesis() {
-            self.qc.verify(committee)?;
+            self.qc.verify(committees)?;
         }
+
+        ensure!(
+            block_committee.epoch == self.epoch,
+            ConsensusError::InvalidEpoch(self.epoch, block_committee.epoch)
+        );
 
         // Check the TC embedded in the block (if any).
         if let Some(ref tc) = self.tc {
-            tc.verify(committee)?;
+            tc.verify(committees)?;
         }
         Ok(())
     }
@@ -81,6 +96,7 @@ impl Hash for Block {
         let mut hasher = Sha512::new();
         hasher.update(self.author.0);
         hasher.update(self.round.to_le_bytes());
+        hasher.update(self.epoch.to_le_bytes());
         for x in &self.payload {
             hasher.update(x);
         }
@@ -113,6 +129,7 @@ impl fmt::Display for Block {
 pub struct Vote {
     pub hash: Digest,
     pub round: Round,
+    pub epoch: EpochNumber,
     pub author: PublicKey,
     pub signature: Signature,
 }
@@ -125,6 +142,7 @@ impl Vote {
     ) -> Self {
         let vote = Self {
             hash: block.digest(),
+            epoch: block.epoch,
             round: block.round,
             author,
             signature: Signature::default(),
@@ -133,10 +151,13 @@ impl Vote {
         Self { signature, ..vote }
     }
 
-    pub fn verify(&self, committee: &Committee) -> ConsensusResult<()> {
+    pub fn verify(&self, committees: &Committees) -> ConsensusResult<()> {
+        let vote_committee = committees
+            .get_committe_for_epoch(&self.epoch)
+            .ok_or(ConsensusError::UnknownCommittee(self.epoch))?;
         // Ensure the authority has voting rights.
         ensure!(
-            committee.stake(&self.author) > 0,
+            vote_committee.stake(&self.author) > 0,
             ConsensusError::UnknownAuthority(self.author)
         );
 
@@ -151,6 +172,7 @@ impl Hash for Vote {
         let mut hasher = Sha512::new();
         hasher.update(&self.hash);
         hasher.update(self.round.to_le_bytes());
+        hasher.update(self.epoch.to_le_bytes());
         Digest(hasher.finalize().as_slice()[..32].try_into().unwrap())
     }
 }
@@ -164,6 +186,7 @@ impl fmt::Debug for Vote {
 #[derive(Clone, Serialize, Deserialize, Default)]
 pub struct QC {
     pub hash: Digest,
+    pub epoch: EpochNumber,
     pub round: Round,
     pub votes: Vec<(PublicKey, Signature)>,
 }
@@ -177,19 +200,22 @@ impl QC {
         self.hash == Digest::default() && self.round != 0
     }
 
-    pub fn verify(&self, committee: &Committee) -> ConsensusResult<()> {
+    pub fn verify(&self, committees: &Committees) -> ConsensusResult<()> {
+        let qc_committee = committees
+            .get_committe_for_epoch(&self.epoch)
+            .ok_or(ConsensusError::UnknownCommittee(self.epoch))?;
         // Ensure the QC has a quorum.
         let mut weight = 0;
         let mut used = HashSet::new();
         for (name, _) in self.votes.iter() {
             ensure!(!used.contains(name), ConsensusError::AuthorityReuse(*name));
-            let voting_rights = committee.stake(name);
+            let voting_rights = qc_committee.stake(name);
             ensure!(voting_rights > 0, ConsensusError::UnknownAuthority(*name));
             used.insert(*name);
             weight += voting_rights;
         }
         ensure!(
-            weight >= committee.quorum_threshold(),
+            weight >= qc_committee.quorum_threshold(),
             ConsensusError::QCRequiresQuorum
         );
 
@@ -203,6 +229,7 @@ impl Hash for QC {
         let mut hasher = Sha512::new();
         hasher.update(&self.hash);
         hasher.update(self.round.to_le_bytes());
+        hasher.update(self.epoch.to_le_bytes());
         Digest(hasher.finalize().as_slice()[..32].try_into().unwrap())
     }
 }
@@ -222,6 +249,7 @@ impl PartialEq for QC {
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Timeout {
     pub high_qc: QC,
+    pub epoch: EpochNumber,
     pub round: Round,
     pub author: PublicKey,
     pub signature: Signature,
@@ -230,6 +258,7 @@ pub struct Timeout {
 impl Timeout {
     pub async fn new(
         high_qc: QC,
+        epoch: EpochNumber,
         round: Round,
         author: PublicKey,
         mut signature_service: SignatureService,
@@ -237,6 +266,7 @@ impl Timeout {
         let timeout = Self {
             high_qc,
             round,
+            epoch,
             author,
             signature: Signature::default(),
         };
@@ -247,10 +277,14 @@ impl Timeout {
         }
     }
 
-    pub fn verify(&self, committee: &Committee) -> ConsensusResult<()> {
+    pub fn verify(&self, committees: &Committees) -> ConsensusResult<()> {
+        let timeout_committee = committees
+            .get_committe_for_epoch(&self.epoch)
+            .ok_or(ConsensusError::UnknownCommittee(self.epoch))?;
+
         // Ensure the authority has voting rights.
         ensure!(
-            committee.stake(&self.author) > 0,
+            timeout_committee.stake(&self.author) > 0,
             ConsensusError::UnknownAuthority(self.author)
         );
 
@@ -259,7 +293,7 @@ impl Timeout {
 
         // Check the embedded QC.
         if self.high_qc != QC::genesis() {
-            self.high_qc.verify(committee)?;
+            self.high_qc.verify(committees)?;
         }
         Ok(())
     }
@@ -269,6 +303,7 @@ impl Hash for Timeout {
     fn digest(&self) -> Digest {
         let mut hasher = Sha512::new();
         hasher.update(self.round.to_le_bytes());
+        hasher.update(self.epoch.to_le_bytes());
         hasher.update(self.high_qc.round.to_le_bytes());
         Digest(hasher.finalize().as_slice()[..32].try_into().unwrap())
     }
@@ -282,24 +317,28 @@ impl fmt::Debug for Timeout {
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct TC {
+    pub epoch: EpochNumber,
     pub round: Round,
     pub votes: Vec<(PublicKey, Signature, Round)>,
 }
 
 impl TC {
-    pub fn verify(&self, committee: &Committee) -> ConsensusResult<()> {
+    pub fn verify(&self, committees: &Committees) -> ConsensusResult<()> {
+        let tc_committee = committees
+            .get_committe_for_epoch(&self.epoch)
+            .ok_or(ConsensusError::UnknownCommittee(self.epoch))?;
         // Ensure the QC has a quorum.
         let mut weight = 0;
         let mut used = HashSet::new();
         for (name, _, _) in self.votes.iter() {
             ensure!(!used.contains(name), ConsensusError::AuthorityReuse(*name));
-            let voting_rights = committee.stake(name);
+            let voting_rights = tc_committee.stake(name);
             ensure!(voting_rights > 0, ConsensusError::UnknownAuthority(*name));
             used.insert(*name);
             weight += voting_rights;
         }
         ensure!(
-            weight >= committee.quorum_threshold(),
+            weight >= tc_committee.quorum_threshold(),
             ConsensusError::TCRequiresQuorum
         );
 

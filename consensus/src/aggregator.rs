@@ -1,4 +1,4 @@
-use crate::config::{Committee, Stake};
+use crate::config::{Committees, EpochNumber, Stake};
 use crate::consensus::Round;
 use crate::error::{ConsensusError, ConsensusResult};
 use crate::messages::{Timeout, Vote, QC, TC};
@@ -11,15 +11,15 @@ use std::collections::{HashMap, HashSet};
 pub mod aggregator_tests;
 
 pub struct Aggregator {
-    committee: Committee,
-    votes_aggregators: HashMap<Round, HashMap<Digest, Box<QCMaker>>>,
-    timeouts_aggregators: HashMap<Round, Box<TCMaker>>,
+    committees: Committees,
+    votes_aggregators: HashMap<(EpochNumber, Round), HashMap<Digest, Box<QCMaker>>>,
+    timeouts_aggregators: HashMap<(EpochNumber, Round), Box<TCMaker>>,
 }
 
 impl Aggregator {
-    pub fn new(committee: Committee) -> Self {
+    pub fn new(committees: Committees) -> Self {
         Self {
-            committee,
+            committees,
             votes_aggregators: HashMap::new(),
             timeouts_aggregators: HashMap::new(),
         }
@@ -31,11 +31,11 @@ impl Aggregator {
 
         // Add the new vote to our aggregator and see if we have a QC.
         self.votes_aggregators
-            .entry(vote.round)
+            .entry((vote.epoch, vote.round))
             .or_insert_with(HashMap::new)
             .entry(vote.digest())
             .or_insert_with(|| Box::new(QCMaker::new()))
-            .append(vote, &self.committee)
+            .append(vote, &self.committees)
     }
 
     pub fn add_timeout(&mut self, timeout: Timeout) -> ConsensusResult<Option<TC>> {
@@ -44,14 +44,18 @@ impl Aggregator {
 
         // Add the new timeout to our aggregator and see if we have a TC.
         self.timeouts_aggregators
-            .entry(timeout.round)
+            .entry((timeout.epoch, timeout.round))
             .or_insert_with(|| Box::new(TCMaker::new()))
-            .append(timeout, &self.committee)
+            .append(timeout, &self.committees)
     }
 
-    pub fn cleanup(&mut self, round: &Round) {
-        self.votes_aggregators.retain(|k, _| k >= round);
-        self.timeouts_aggregators.retain(|k, _| k >= round);
+    pub fn cleanup(&mut self, epoch: &EpochNumber, round: &Round) {
+        self.votes_aggregators
+            .retain(|(vote_epoch, vote_round), _| vote_epoch == epoch && vote_round >= round);
+        self.timeouts_aggregators
+            .retain(|(timeout_epoch, timeout_round), _| {
+                timeout_epoch == epoch && timeout_round >= round
+            });
     }
 }
 
@@ -71,7 +75,7 @@ impl QCMaker {
     }
 
     /// Try to append a signature to a (partial) quorum.
-    pub fn append(&mut self, vote: Vote, committee: &Committee) -> ConsensusResult<Option<QC>> {
+    pub fn append(&mut self, vote: Vote, committees: &Committees) -> ConsensusResult<Option<QC>> {
         let author = vote.author;
 
         // Ensure it is the first time this authority votes.
@@ -80,13 +84,18 @@ impl QCMaker {
             ConsensusError::AuthorityReuse(author)
         );
 
+        let vote_committee = committees
+            .get_committe_for_epoch(&vote.epoch)
+            .ok_or(ConsensusError::UnknownCommittee(vote.epoch))?;
+
         self.votes.push((author, vote.signature));
-        self.weight += committee.stake(&author);
-        if self.weight >= committee.quorum_threshold() {
+        self.weight += vote_committee.stake(&author);
+        if self.weight >= vote_committee.quorum_threshold() {
             self.weight = 0; // Ensures QC is only made once.
             return Ok(Some(QC {
                 hash: vote.hash.clone(),
                 round: vote.round,
+                epoch: vote.epoch,
                 votes: self.votes.clone(),
             }));
         }
@@ -113,7 +122,7 @@ impl TCMaker {
     pub fn append(
         &mut self,
         timeout: Timeout,
-        committee: &Committee,
+        committees: &Committees,
     ) -> ConsensusResult<Option<TC>> {
         let author = timeout.author;
 
@@ -123,13 +132,18 @@ impl TCMaker {
             ConsensusError::AuthorityReuse(author)
         );
 
+        let timeout_committee = committees
+            .get_committe_for_epoch(&timeout.epoch)
+            .ok_or(ConsensusError::UnknownCommittee(timeout.epoch))?;
+
         // Add the timeout to the accumulator.
         self.votes
             .push((author, timeout.signature, timeout.high_qc.round));
-        self.weight += committee.stake(&author);
-        if self.weight >= committee.quorum_threshold() {
+        self.weight += timeout_committee.stake(&author);
+        if self.weight >= timeout_committee.quorum_threshold() {
             self.weight = 0; // Ensures TC is only created once.
             return Ok(Some(TC {
+                epoch: timeout.epoch,
                 round: timeout.round,
                 votes: self.votes.clone(),
             }));
