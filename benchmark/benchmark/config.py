@@ -19,14 +19,15 @@ class Key:
 
 
 class Committee:
-    def __init__(self, names, consensus_addr, transactions_addr, mempool_addr):
-        inputs = [names, consensus_addr, transactions_addr, mempool_addr]
+    def __init__(self, epochs, names, consensus_addr, transactions_addr, mempool_addr):
+        inputs = [epochs, names, consensus_addr, transactions_addr, mempool_addr]
         assert all(isinstance(x, list) for x in inputs)
         assert all(isinstance(x, str) for y in inputs for x in y)
-        assert len({len(x) for x in inputs}) == 1
+        assert len({len(x) for x in inputs[1:]}) == 1
 
         self.names = names
         self.consensus = consensus_addr
+        self.epochs = epochs
         self.front = transactions_addr
         self.mempool = mempool_addr
 
@@ -36,21 +37,30 @@ class Committee:
         }
 
     def _build_consensus(self):
-        node = {}
-        for a, n in zip(self.consensus, self.names):
-            node[n] = {'name': n, 'stake': 1, 'address': a}
-        return {'authorities': node, 'epoch': 1}
+        committees = {}
+        for epoch in self.epochs:
+            node = {}
+            for a, n in zip(self.consensus, self.names):
+                node[n] = {'name': n, 'stake': 1, 'address': a}
+
+            committees[epoch] = {'authorities': node, 'epoch': int(epoch)}
+
+        return { 'committees': committees }
 
     def _build_mempool(self):
-        node = {}
-        for n, f, m in zip(self.names, self.front, self.mempool):
-            node[n] = {
-                'name': n,
-                'stake': 1,
-                'transactions_address': f,
-                'mempool_address': m
-            }
-        return {'authorities': node, 'epoch': 1}
+        committees = {}
+        for epoch in self.epochs:
+            node = {}
+            for n, f, m in zip(self.names, self.front, self.mempool):
+                node[n] = {
+                    'name': n,
+                    'stake': 1,
+                    'transactions_address': f,
+                    'mempool_address': m
+                }
+            committees[epoch] = {'authorities': node, 'epoch': int(epoch)}
+
+        return { 'committees': committees }
 
     def print(self, filename):
         assert isinstance(filename, str)
@@ -68,6 +78,7 @@ class Committee:
 
         consensus_authorities = data['consensus']['authorities'].values()
         mempool_authorities = data['mempool']['authorities'].values()
+        epochs = []
 
         names = [x['name'] for x in consensus_authorities]
         consensus_addr = [x['address'] for x in consensus_authorities]
@@ -75,11 +86,12 @@ class Committee:
             x['transactions_address'] for x in mempool_authorities
         ]
         mempool_addr = [x['mempool_address'] for x in mempool_authorities]
-        return cls(names, consensus_addr, transactions_addr, mempool_addr)
+        return cls(epochs, names, consensus_addr, transactions_addr, mempool_addr)
 
 
 class LocalCommittee(Committee):
-    def __init__(self, names, port):
+    def __init__(self, epochs, names, port):
+        print('in __init__', epochs)
         assert isinstance(names, list) and all(
             isinstance(x, str) for x in names)
         assert isinstance(port, int)
@@ -87,7 +99,7 @@ class LocalCommittee(Committee):
         consensus = [f'127.0.0.1:{port + i}' for i in range(size)]
         front = [f'127.0.0.1:{port + i + size}' for i in range(size)]
         mempool = [f'127.0.0.1:{port + i + 2*size}' for i in range(size)]
-        super().__init__(names, consensus, front, mempool)
+        super().__init__(epochs, names, consensus, front, mempool)
 
 
 class NodeParameters:
@@ -129,7 +141,13 @@ class BenchParameters:
             if not rate:
                 raise ConfigError('Missing input rate')
 
+            epochs = json['epochs']
+            epochs = epochs if isinstance(epochs, list) else [epochs]
+            if not epochs:
+                raise ConfigError('Missing input epochs')
+
             self.nodes = [int(x) for x in nodes]
+            self.epochs = [int(x) for x in epochs]
             self.rate = [int(x) for x in rate]
             self.tx_size = int(json['tx_size'])
             self.faults = int(json['faults'])
