@@ -68,4 +68,10 @@ pub enum ConsensusError {
 
     #[error("Unknown committee for epoch {0}")]
     UnknownCommittee(EpochNumber),
+
+    #[error("Epoch {0} got concluded but epoch counter was not bumped")]
+    MissingEpochBumpAfterEpochChange(EpochNumber),
+
+    #[error("Epoch {0} got concluded but round counter was not reset")]
+    MissingRoundsResetAfterEpochChange(EpochNumber),
 }

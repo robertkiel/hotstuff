@@ -56,7 +56,7 @@ impl Helper {
             // get the requestors address.
             let address = match self
                 .committees
-                .get_committe_for_epoch(&epoch)
+                .get_committee_for_epoch(&epoch)
                 .expect("No committee for epoch {epoch}")
                 .mempool_address(&origin)
             {

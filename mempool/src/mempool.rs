@@ -86,7 +86,7 @@ impl Mempool {
             "Mempool successfully booted on {}",
             mempool
                 .committees
-                .get_committe_for_epoch(&1)
+                .get_committee_for_epoch(&1)
                 .expect("Cannot get committee for first epoch")
                 .mempool_address(&mempool.name)
                 .expect("Our public key is not in the committee")
@@ -117,7 +117,7 @@ impl Mempool {
 
         let initial_committee = self
             .committees
-            .get_committe_for_epoch(&epoch)
+            .get_committee_for_epoch(&epoch)
             .expect("Node is not part of mempool committee");
         // We first receive clients' transactions from the network.
         let mut address = initial_committee
@@ -167,7 +167,7 @@ impl Mempool {
 
         let initial_committee = self
             .committees
-            .get_committe_for_epoch(epoch)
+            .get_committee_for_epoch(epoch)
             .expect("Node is not part of mempool committee");
 
         // Receive incoming messages from other mempools.

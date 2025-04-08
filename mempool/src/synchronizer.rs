@@ -131,7 +131,7 @@ impl Synchronizer {
 
                         // Send sync request to a single node. If this fails, we will send it
                         // to other nodes when a timer times out.
-                        let address = match self.committees.get_committe_for_epoch(&epoch).expect("Missing committee for epoch {epoch}").mempool_address(&target) {
+                        let address = match self.committees.get_committee_for_epoch(&epoch).expect("Missing committee for epoch {epoch}").mempool_address(&target) {
                             Some(address) => address,
                             None => {
                                 error!("Consensus asked us to sync with an unknown node: {}", target);
@@ -195,7 +195,7 @@ impl Synchronizer {
 
 
                     if !retry.is_empty() {
-                        let addresses = self.committees.get_committe_for_epoch(&epoch).expect("Missing committee for epoch {epoch}")
+                        let addresses = self.committees.get_committee_for_epoch(&epoch).expect("Missing committee for epoch {epoch}")
                             .broadcast_addresses(&self.name)
                             .iter()
                             .map(|(_, address)| *address)

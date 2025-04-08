@@ -342,7 +342,16 @@ impl Core {
         };
 
         // Last block concluded last epoch, so current epoch must be old epoch + 1.
-        if b1.epoch_concluded && block.epoch != b1.epoch + 1 {}
+        if b1.epoch_concluded {
+            ensure!(
+                block.epoch == b1.epoch + 1,
+                ConsensusError::MissingEpochBumpAfterEpochChange(b1.epoch)
+            );
+            ensure!(
+                block.round == 0,
+                ConsensusError::MissingRoundsResetAfterEpochChange(b1.epoch)
+            )
+        }
 
         // Store the block only if we have already processed all its ancestors.
         self.store_block(block).await;

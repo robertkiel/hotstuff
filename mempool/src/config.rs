@@ -55,7 +55,7 @@ pub fn epoch_number_from_bytes(bytes: &[u8]) -> EpochNumber {
 
 pub type Stake = u32;
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Authority {
     /// The voting power of this authority.
     pub stake: Stake,
@@ -65,7 +65,7 @@ pub struct Authority {
     pub mempool_address: SocketAddr,
 }
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Committee {
     pub authorities: HashMap<PublicKey, Authority>,
     pub epoch: EpochNumber,
@@ -122,7 +122,7 @@ impl Committee {
     }
 }
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Committees {
     pub committees: HashMap<EpochNumber, Committee>,
 }
@@ -140,7 +140,7 @@ impl Committees {
         }
     }
 
-    pub fn get_committe_for_epoch(&self, epoch: &EpochNumber) -> Option<Committee> {
+    pub fn get_committee_for_epoch(&self, epoch: &EpochNumber) -> Option<Committee> {
         // TODO: think of a generic way to assign committees for epochs
         self.committees.get(&epoch).map(|c| c.to_owned())
     }
