@@ -94,7 +94,7 @@ impl Proposer {
 
         let block_committee = self
             .committees
-            .get_committe_for_epoch(&epoch)
+            .get_committee_for_epoch(&epoch)
             .expect("Missing committee for epoch {epoch}");
 
         // Broadcast our new block.

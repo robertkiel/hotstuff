@@ -160,6 +160,13 @@ fn deploy_testbed(
     // Print the committee file.
     let committee_file = "committee.json";
     let _ = fs::remove_file(committee_file);
+
+    let committees = Committees {
+        mempool: generate_mempool_committees(&keys, epochs),
+        consensus: generate_consensus_committees(&keys, epochs),
+    };
+
+    println!("committees {committees:?}");
     Committees {
         mempool: generate_mempool_committees(&keys, epochs),
         consensus: generate_consensus_committees(&keys, epochs),

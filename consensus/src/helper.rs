@@ -52,7 +52,7 @@ impl Helper {
                 let block: Block =
                     bincode::deserialize(&bytes).expect("Failed to deserialize our own block");
 
-                let block_committee = match self.committees.get_committe_for_epoch(&block.epoch) {
+                let block_committee = match self.committees.get_committee_for_epoch(&block.epoch) {
                     Some(committee) => committee,
                     None => {
                         warn!("Received sync request for unknown epoch.");

@@ -188,7 +188,7 @@ impl Core {
 
         let timeout_committee = self
             .committees
-            .get_committe_for_epoch(&self.epoch)
+            .get_committee_for_epoch(&self.epoch)
             .ok_or(ConsensusError::UnknownCommittee(self.epoch))?;
 
         // Broadcast the timeout message.
@@ -251,7 +251,7 @@ impl Core {
 
             let timeout_committee = self
                 .committees
-                .get_committe_for_epoch(&self.epoch)
+                .get_committee_for_epoch(&self.epoch)
                 .ok_or(ConsensusError::UnknownCommittee(self.epoch))?;
 
             // Try to advance the round.
@@ -372,7 +372,7 @@ impl Core {
             } else {
                 let epoch_committee = self
                     .committees
-                    .get_committe_for_epoch(&self.epoch)
+                    .get_committee_for_epoch(&self.epoch)
                     .expect("Missing committee for epoch {epoch}");
 
                 debug!("Sending {:?} to {}", vote, next_leader);

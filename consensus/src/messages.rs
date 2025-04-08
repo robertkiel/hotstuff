@@ -60,7 +60,7 @@ impl Block {
 
     pub fn verify(&self, committees: &Committees) -> ConsensusResult<()> {
         let block_committee = committees
-            .get_committe_for_epoch(&self.epoch)
+            .get_committee_for_epoch(&self.epoch)
             .ok_or(ConsensusError::UnknownCommittee(self.epoch))?;
 
         // Ensure the authority has voting rights.
@@ -153,7 +153,7 @@ impl Vote {
 
     pub fn verify(&self, committees: &Committees) -> ConsensusResult<()> {
         let vote_committee = committees
-            .get_committe_for_epoch(&self.epoch)
+            .get_committee_for_epoch(&self.epoch)
             .ok_or(ConsensusError::UnknownCommittee(self.epoch))?;
         // Ensure the authority has voting rights.
         ensure!(
@@ -202,7 +202,7 @@ impl QC {
 
     pub fn verify(&self, committees: &Committees) -> ConsensusResult<()> {
         let qc_committee = committees
-            .get_committe_for_epoch(&self.epoch)
+            .get_committee_for_epoch(&self.epoch)
             .ok_or(ConsensusError::UnknownCommittee(self.epoch))?;
         // Ensure the QC has a quorum.
         let mut weight = 0;
@@ -279,7 +279,7 @@ impl Timeout {
 
     pub fn verify(&self, committees: &Committees) -> ConsensusResult<()> {
         let timeout_committee = committees
-            .get_committe_for_epoch(&self.epoch)
+            .get_committee_for_epoch(&self.epoch)
             .ok_or(ConsensusError::UnknownCommittee(self.epoch))?;
 
         // Ensure the authority has voting rights.
@@ -325,7 +325,7 @@ pub struct TC {
 impl TC {
     pub fn verify(&self, committees: &Committees) -> ConsensusResult<()> {
         let tc_committee = committees
-            .get_committe_for_epoch(&self.epoch)
+            .get_committee_for_epoch(&self.epoch)
             .ok_or(ConsensusError::UnknownCommittee(self.epoch))?;
         // Ensure the QC has a quorum.
         let mut weight = 0;

@@ -37,13 +37,13 @@ impl Parameters {
     }
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Authority {
     pub stake: Stake,
     pub address: SocketAddr,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Committee {
     pub authorities: HashMap<PublicKey, Authority>,
     pub epoch: EpochNumber,
@@ -91,7 +91,7 @@ impl Committee {
     }
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Committees {
     pub committees: HashMap<EpochNumber, Committee>,
 }
@@ -109,7 +109,7 @@ impl Committees {
         }
     }
 
-    pub fn get_committe_for_epoch(&self, epoch: &EpochNumber) -> Option<Committee> {
+    pub fn get_committee_for_epoch(&self, epoch: &EpochNumber) -> Option<Committee> {
         // TODO: think of a generic way to assign committees for epochs
         self.committees.get(&epoch).map(|c| c.to_owned())
     }

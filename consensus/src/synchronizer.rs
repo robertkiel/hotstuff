@@ -63,7 +63,7 @@ impl Synchronizer {
                                     .as_millis();
                                 requests.insert(parent.clone(), now);
                                 let address = committees
-                                    .get_committe_for_epoch(&block_epoch)
+                                    .get_committee_for_epoch(&block_epoch)
                                     .expect("Valid block has no committee")
                                     .address(&author)
                                     .expect("Author of valid block is not in the committee");
@@ -97,7 +97,7 @@ impl Synchronizer {
                             if timestamp + (sync_retry_delay as u128) < now {
                                 debug!("Requesting sync for block {} (retry)", digest);
                                 let addresses = committees
-                                    .get_committe_for_epoch(&epoch)
+                                    .get_committee_for_epoch(&epoch)
                                     .expect("Node is not part of the consensus epoch")
                                     .broadcast_addresses(&name)
                                     .into_iter()

@@ -85,7 +85,7 @@ impl QCMaker {
         );
 
         let vote_committee = committees
-            .get_committe_for_epoch(&vote.epoch)
+            .get_committee_for_epoch(&vote.epoch)
             .ok_or(ConsensusError::UnknownCommittee(vote.epoch))?;
 
         self.votes.push((author, vote.signature));
@@ -133,7 +133,7 @@ impl TCMaker {
         );
 
         let timeout_committee = committees
-            .get_committe_for_epoch(&timeout.epoch)
+            .get_committee_for_epoch(&timeout.epoch)
             .ok_or(ConsensusError::UnknownCommittee(timeout.epoch))?;
 
         // Add the timeout to the accumulator.

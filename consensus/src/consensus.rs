@@ -64,7 +64,7 @@ impl Consensus {
 
         // Spawn the network receiver.
         let mut address = committees
-            .get_committe_for_epoch(&1)
+            .get_committee_for_epoch(&1)
             .expect("Missing consensus committee for first epoch")
             .address(&name)
             .expect("Our public key is not in the committee");

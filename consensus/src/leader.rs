@@ -15,7 +15,7 @@ impl RRLeaderElector {
     }
 
     pub fn get_leader(&self, epoch: EpochNumber, round: Round) -> PublicKey {
-        let committee = self.committees.get_committe_for_epoch(&epoch).unwrap();
+        let committee = self.committees.get_committee_for_epoch(&epoch).unwrap();
         let mut keys: Vec<_> = committee.authorities.keys().cloned().collect();
         keys.sort();
         keys[round as usize % committee.size()]
