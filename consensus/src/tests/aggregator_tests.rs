@@ -3,7 +3,10 @@ use crate::common::{committee, keys, qc, vote};
 
 #[test]
 fn add_vote() {
-    let mut aggregator = Aggregator::new(committee());
+    let mut committees = Committees::new();
+    committees.add_committe_for_epoch(committee(), 1);
+
+    let mut aggregator = Aggregator::new(committees);
     let result = aggregator.add_vote(vote());
     assert!(result.is_ok());
     assert!(result.unwrap().is_none());
@@ -11,7 +14,10 @@ fn add_vote() {
 
 #[test]
 fn make_qc() {
-    let mut aggregator = Aggregator::new(committee());
+    let mut committees = Committees::new();
+    committees.add_committe_for_epoch(committee(), 1);
+
+    let mut aggregator = Aggregator::new(committees.clone());
     let mut keys = keys();
     let qc = qc();
     let hash = qc.digest();
@@ -20,28 +26,31 @@ fn make_qc() {
     // Add 2f+1 votes to the aggregator and ensure it returns the cryptographic
     // material to make a valid QC.
     let (public_key, secret_key) = keys.pop().unwrap();
-    let vote = Vote::new_from_key(hash.clone(), round, public_key, &secret_key);
+    let vote = Vote::new_from_key(hash.clone(), round, public_key, 1, &secret_key);
     let result = aggregator.add_vote(vote);
     assert!(result.is_ok());
     assert!(result.unwrap().is_none());
 
     let (public_key, secret_key) = keys.pop().unwrap();
-    let vote = Vote::new_from_key(hash.clone(), round, public_key, &secret_key);
+    let vote = Vote::new_from_key(hash.clone(), round, public_key, 1, &secret_key);
     let result = aggregator.add_vote(vote);
     assert!(result.is_ok());
     assert!(result.unwrap().is_none());
 
     let (public_key, secret_key) = keys.pop().unwrap();
-    let vote = Vote::new_from_key(hash.clone(), round, public_key, &secret_key);
+    let vote = Vote::new_from_key(hash.clone(), round, public_key, 1, &secret_key);
     match aggregator.add_vote(vote) {
-        Ok(Some(qc)) => assert!(qc.verify(&committee()).is_ok()),
+        Ok(Some(qc)) => assert!(qc.verify(&committees).is_ok()),
         _ => assert!(false),
     }
 }
 
 #[test]
 fn cleanup() {
-    let mut aggregator = Aggregator::new(committee());
+    let mut committees = Committees::new();
+    committees.add_committe_for_epoch(committee(), 1);
+
+    let mut aggregator = Aggregator::new(committees);
 
     // Add a vote and ensure it is in the aggregator memory.
     let result = aggregator.add_vote(vote());
@@ -50,7 +59,7 @@ fn cleanup() {
     assert!(aggregator.timeouts_aggregators.is_empty());
 
     // Clean up the aggregator.
-    aggregator.cleanup(&2);
+    aggregator.cleanup(&1, &2);
     assert!(aggregator.votes_aggregators.is_empty());
     assert!(aggregator.timeouts_aggregators.is_empty());
 }

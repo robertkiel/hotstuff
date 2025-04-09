@@ -4,6 +4,8 @@ use crate::mempool::MempoolMessage;
 use bytes::Bytes;
 use futures::future::try_join_all;
 use network::ReliableSender;
+use std::fs;
+use store::Store;
 use tokio::sync::mpsc::channel;
 
 #[tokio::test]
@@ -11,10 +13,19 @@ async fn wait_for_quorum() {
     let (tx_message, rx_message) = channel(1);
     let (tx_batch, mut rx_batch) = channel(1);
     let (myself, _) = keys().pop().unwrap();
-    let committee = committee_with_base_port(7_000);
+    let committees = committee_with_base_port(7_000);
+
+    // Create a new test store.
+    let path = ".db_test_batch_timeout";
+    let _ = fs::remove_dir_all(path);
+    let mut store = Store::new(path).unwrap();
+
+    store
+        .write(EPOCH_KEY.into(), (1u128.to_be_bytes()).into())
+        .await;
 
     // Spawn a `QuorumWaiter` instance.
-    QuorumWaiter::spawn(committee.clone(), /* stake */ 1, rx_message, tx_batch);
+    QuorumWaiter::spawn(committees.clone(), store, myself, rx_message, tx_batch);
 
     // Make a batch.
     let message = MempoolMessage::Batch(batch());
@@ -25,7 +36,11 @@ async fn wait_for_quorum() {
     let mut names = Vec::new();
     let mut addresses = Vec::new();
     let mut listener_handles = Vec::new();
-    for (name, address) in committee.broadcast_addresses(&myself) {
+    let initial_committee = committees
+        .get_committee_for_epoch(&1)
+        .expect("Missing committee");
+
+    for (name, address) in initial_committee.broadcast_addresses(&myself) {
         let handle = listener(address, Some(expected.clone()));
         names.push(name);
         addresses.push(address);

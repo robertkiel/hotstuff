@@ -138,14 +138,17 @@ impl Mempool {
             /* rx_transaction */ rx_batch_maker,
             /* tx_message */ tx_quorum_waiter,
             /* mempool_addresses */
-            initial_committee.broadcast_addresses(&self.name),
+            self.committees.clone(),
+            self.store.clone(),
+            self.name,
         );
 
         // The `QuorumWaiter` waits for 2f authorities to acknowledge reception of the batch. It then forwards
         // the batch to the `Processor`.
         QuorumWaiter::spawn(
-            initial_committee.clone(),
-            /* stake */ initial_committee.stake(&self.name),
+            self.committees.clone(),
+            self.store.clone(),
+            self.name,
             /* rx_message */ rx_quorum_waiter,
             /* tx_batch */ tx_processor,
         );

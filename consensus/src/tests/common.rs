@@ -1,6 +1,7 @@
-use crate::config::Committees;
+use crate::config::{Committee, Committees};
 use crate::consensus::Round;
 use crate::messages::{Block, Timeout, Vote, QC};
+use crate::EpochNumber;
 use bytes::Bytes;
 use crypto::Hash as _;
 use crypto::{generate_keypair, Digest, PublicKey, SecretKey, Signature};
@@ -20,8 +21,8 @@ pub fn keys() -> Vec<(PublicKey, SecretKey)> {
 }
 
 // Fixture.
-pub fn committee() -> Committees {
-    Committees::new(
+pub fn committee() -> Committee {
+    Committee::new(
         keys()
             .into_iter()
             .enumerate()
@@ -31,18 +32,23 @@ pub fn committee() -> Committees {
                 (name, stake, address)
             })
             .collect(),
-        /* epoch */ 100,
+        /* epoch */ 1,
     )
 }
 
 // Fixture.
-pub fn committee_with_base_port(base_port: u16) -> Committees {
+pub fn committees_with_base_port(base_port: u16) -> Committees {
+    let mut res = Committees::new();
+
     let mut committee = committee();
     for authority in committee.authorities.values_mut() {
         let port = authority.address.port();
         authority.address.set_port(base_port + port);
     }
-    committee
+
+    res.add_committe_for_epoch(committee, 1);
+
+    res
 }
 
 impl Block {
@@ -51,6 +57,8 @@ impl Block {
         author: PublicKey,
         round: Round,
         payload: Vec<Digest>,
+        epoch: EpochNumber,
+        epoch_concluded: bool,
         secret: &SecretKey,
     ) -> Self {
         let block = Block {
@@ -59,6 +67,8 @@ impl Block {
             author,
             round,
             payload,
+            epoch,
+            epoch_concluded,
             signature: Signature::default(),
         };
         let signature = Signature::new(&block.digest(), secret);
@@ -73,11 +83,18 @@ impl PartialEq for Block {
 }
 
 impl Vote {
-    pub fn new_from_key(hash: Digest, round: Round, author: PublicKey, secret: &SecretKey) -> Self {
+    pub fn new_from_key(
+        hash: Digest,
+        round: Round,
+        author: PublicKey,
+        epoch: EpochNumber,
+        secret: &SecretKey,
+    ) -> Self {
         let vote = Self {
             hash,
             round,
             author,
+            epoch,
             signature: Signature::default(),
         };
         let signature = Signature::new(&vote.digest(), &secret);
@@ -92,11 +109,18 @@ impl PartialEq for Vote {
 }
 
 impl Timeout {
-    pub fn new_from_key(high_qc: QC, round: Round, author: PublicKey, secret: &SecretKey) -> Self {
+    pub fn new_from_key(
+        high_qc: QC,
+        round: Round,
+        author: PublicKey,
+        epoch: EpochNumber,
+        secret: &SecretKey,
+    ) -> Self {
         let timeout = Self {
             high_qc,
             round,
             author,
+            epoch,
             signature: Signature::default(),
         };
         let signature = Signature::new(&timeout.digest(), &secret);
@@ -116,13 +140,21 @@ impl PartialEq for Timeout {
 // Fixture.
 pub fn block() -> Block {
     let (public_key, secret_key) = keys().pop().unwrap();
-    Block::new_from_key(QC::genesis(), public_key, 1, Vec::new(), &secret_key)
+    Block::new_from_key(
+        QC::genesis(),
+        public_key,
+        1,
+        Vec::new(),
+        1,
+        false,
+        &secret_key,
+    )
 }
 
 // Fixture.
 pub fn vote() -> Vote {
     let (public_key, secret_key) = keys().pop().unwrap();
-    Vote::new_from_key(block().digest(), 1, public_key, &secret_key)
+    Vote::new_from_key(block().digest(), 1, public_key, 1, &secret_key)
 }
 
 // Fixture.
@@ -130,6 +162,7 @@ pub fn qc() -> QC {
     let qc = QC {
         hash: Digest::default(),
         round: 1,
+        epoch: 1,
         votes: Vec::new(),
     };
     let digest = qc.digest();
@@ -156,6 +189,8 @@ pub fn chain(keys: Vec<(PublicKey, SecretKey)>) -> Vec<Block> {
                 *public_key,
                 1 + i as Round,
                 Vec::new(),
+                1,
+                false,
                 secret_key,
             );
 
@@ -163,6 +198,7 @@ pub fn chain(keys: Vec<(PublicKey, SecretKey)>) -> Vec<Block> {
             let qc = QC {
                 hash: block.digest(),
                 round: block.round,
+                epoch: 1,
                 votes: Vec::new(),
             };
             let digest = qc.digest();

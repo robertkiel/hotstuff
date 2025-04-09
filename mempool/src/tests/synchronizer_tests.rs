@@ -14,7 +14,11 @@ async fn synchronize() {
     // Create a new test store.
     let path = ".db_test_synchronize";
     let _ = fs::remove_dir_all(path);
-    let store = Store::new(path).unwrap();
+    let mut store = Store::new(path).unwrap();
+
+    store
+        .write(EPOCH_KEY.into(), (1u128.to_be_bytes()).into())
+        .await;
 
     // Spawn a `Synchronizer` instance.
     Synchronizer::spawn(
@@ -27,9 +31,13 @@ async fn synchronize() {
         rx_message,
     );
 
+    let initial_committee = committee
+        .get_committee_for_epoch(&1)
+        .expect("Missing committee for epoch {epoch}");
+
     // Spawn a listener to receive our batch requests.
     let (target, _) = keys.pop().unwrap();
-    let address = committee.mempool_address(&target).unwrap();
+    let address = initial_committee.mempool_address(&target).unwrap();
     let missing = vec![batch_digest()];
     let message = MempoolMessage::BatchRequest(missing.clone(), name);
     let serialized = bincode::serialize(&message).unwrap();

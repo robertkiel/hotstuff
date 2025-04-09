@@ -1,28 +1,30 @@
 use super::*;
-use crate::common::{committee_with_base_port, keys};
+use crate::common::{committees_with_base_port, keys};
 use crate::config::Parameters;
 use crypto::SecretKey;
 use futures::future::try_join_all;
 use std::fs;
+use store::EPOCH_KEY;
 use tokio::sync::mpsc::channel;
 use tokio::task::JoinHandle;
 
 fn spawn_nodes(
     keys: Vec<(PublicKey, SecretKey)>,
-    committee: Committee,
+    committees: Committees,
     store_path: &str,
 ) -> Vec<JoinHandle<Block>> {
     keys.into_iter()
         .enumerate()
         .map(|(i, (name, secret))| {
-            let committee = committee.clone();
+            let committees = committees.clone();
             let parameters = Parameters {
                 timeout_delay: 100,
                 ..Parameters::default()
             };
             let store_path = format!("{}_{}", store_path, i);
             let _ = fs::remove_dir_all(&store_path);
-            let store = Store::new(&store_path).unwrap();
+            let mut store = Store::new(&store_path).unwrap();
+
             let signature_service = SignatureService::new(secret);
             let (tx_consensus_to_mempool, mut rx_consensus_to_mempool) = channel(10);
             let (_tx_mempool_to_consensus, rx_mempool_to_consensus) = channel(1);
@@ -37,9 +39,14 @@ fn spawn_nodes(
 
             // Spawn the consensus engine.
             tokio::spawn(async move {
+                store
+                    .write(EPOCH_KEY.into(), (1u128.to_be_bytes()).into())
+                    .await;
+
                 Consensus::spawn(
                     name,
-                    committee,
+                    committees,
+                    1,
                     parameters,
                     signature_service,
                     store,
@@ -56,11 +63,12 @@ fn spawn_nodes(
 
 #[tokio::test]
 async fn end_to_end() {
-    let committee = committee_with_base_port(15_000);
+    let committees = committees_with_base_port(15_000);
+
+    let store_path = ".db_test_end_to_end";
 
     // Run all nodes.
-    let store_path = ".db_test_end_to_end";
-    let handles = spawn_nodes(keys(), committee, store_path);
+    let handles = spawn_nodes(keys(), committees, store_path);
 
     // Ensure all threads terminated correctly.
     let blocks = try_join_all(handles).await.unwrap();
