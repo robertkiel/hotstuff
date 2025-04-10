@@ -14,7 +14,7 @@ def local(ctx):
     bench_params = {
         "faults": 0,
         "nodes": 4,
-        "epochs": 2,
+        "epochs": 50,
         "rate": 1_000,
         "tx_size": 512,
         "duration": 20,
@@ -23,6 +23,7 @@ def local(ctx):
         "consensus": {
             "timeout_delay": 1_000,
             "sync_retry_delay": 10_000,
+            "epoch_len": 1024
         },
         "mempool": {
             "gc_depth": 50,
@@ -32,7 +33,6 @@ def local(ctx):
             "max_batch_delay": 10,
         },
     }
-    print('here')
     try:
         ret = LocalBench(bench_params, node_params).run(debug=True).result()
         print(ret)
