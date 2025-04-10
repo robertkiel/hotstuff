@@ -74,6 +74,7 @@ impl Node {
             name,
             committee.consensus,
             epoch,
+            parameters.consensus.epoch_len,
             parameters.consensus,
             signature_service,
             store,
@@ -93,6 +94,9 @@ impl Node {
     pub async fn analyze_block(&mut self) {
         while let Some(_block) = self.commit.recv().await {
             // This is where we can further process committed block.
+            //
+            // TODO: Implement fast sync:
+            // Once a new epoch block has been committed, we aggregate all blocks from the previous epoch and send them to other nodees (if asked).
         }
     }
 }
