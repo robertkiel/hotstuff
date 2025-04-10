@@ -96,6 +96,7 @@ impl QCMaker {
                 hash: vote.hash.clone(),
                 round: vote.round,
                 epoch: vote.epoch,
+                epoch_concluded: vote.epoch_concluded,
                 votes: self.votes.clone(),
             }));
         }
@@ -105,7 +106,7 @@ impl QCMaker {
 
 struct TCMaker {
     weight: Stake,
-    votes: Vec<(PublicKey, Signature, Round)>,
+    votes: Vec<(PublicKey, Signature, EpochNumber, Round)>,
     used: HashSet<PublicKey>,
 }
 
@@ -137,13 +138,18 @@ impl TCMaker {
             .ok_or(ConsensusError::UnknownCommittee(timeout.epoch))?;
 
         // Add the timeout to the accumulator.
-        self.votes
-            .push((author, timeout.signature, timeout.high_qc.round));
+        self.votes.push((
+            author,
+            timeout.signature,
+            timeout.high_qc.epoch,
+            timeout.high_qc.round,
+        ));
         self.weight += timeout_committee.stake(&author);
         if self.weight >= timeout_committee.quorum_threshold() {
             self.weight = 0; // Ensures TC is only created once.
             return Ok(Some(TC {
                 epoch: timeout.epoch,
+                epoch_concluded: timeout.epoch_concluded,
                 round: timeout.round,
                 votes: self.votes.clone(),
             }));

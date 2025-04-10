@@ -44,6 +44,7 @@ fn core(
         name,
         committees,
         1,
+        None,
         signature_service,
         store,
         leader_elector,
@@ -78,7 +79,14 @@ async fn handle_proposal() {
     // Make a block and the vote we expect to receive.
     let block = chain(vec![leader_keys(1)]).pop().unwrap();
     let (public_key, secret_key) = keys().pop().unwrap();
-    let vote = Vote::new_from_key(block.digest(), block.round, public_key, 1, &secret_key);
+    let vote = Vote::new_from_key(
+        block.digest(),
+        block.round,
+        public_key,
+        1,
+        false,
+        &secret_key,
+    );
     let expected = bincode::serialize(&ConsensusMessage::Vote(vote)).unwrap();
 
     // Run a core instance.
@@ -113,13 +121,21 @@ async fn generate_proposal() {
     let votes: Vec<_> = keys()
         .iter()
         .map(|(public_key, secret_key)| {
-            Vote::new_from_key(hash.clone(), block.round, *public_key, 1, &secret_key)
+            Vote::new_from_key(
+                hash.clone(),
+                block.round,
+                *public_key,
+                1,
+                false,
+                &secret_key,
+            )
         })
         .collect();
     let hight_qc = QC {
         hash,
         round: block.round,
         epoch: block.epoch,
+        epoch_concluded: block.epoch_concluded,
         votes: votes
             .iter()
             .cloned()
@@ -190,7 +206,7 @@ async fn local_timeout_round() {
 
     // Make the timeout vote we expect to send.
     let (public_key, secret_key) = leader_keys(3);
-    let timeout = Timeout::new_from_key(QC::genesis(), 1, public_key, 1, &secret_key);
+    let timeout = Timeout::new_from_key(QC::genesis(), 1, public_key, 1, false, &secret_key);
     let expected = bincode::serialize(&ConsensusMessage::Timeout(timeout)).unwrap();
 
     // Run a core instance.

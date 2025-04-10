@@ -18,6 +18,7 @@ pub fn epoch_number_from_bytes(bytes: &[u8]) -> EpochNumber {
 pub struct Parameters {
     pub timeout_delay: u64,
     pub sync_retry_delay: u64,
+    pub epoch_len: Option<u64>,
 }
 
 impl Default for Parameters {
@@ -25,6 +26,7 @@ impl Default for Parameters {
         Self {
             timeout_delay: 5_000,
             sync_retry_delay: 10_000,
+            epoch_len: None,
         }
     }
 }

@@ -47,6 +47,7 @@ fn spawn_nodes(
                     name,
                     committees,
                     1,
+                    None,
                     parameters,
                     signature_service,
                     store,

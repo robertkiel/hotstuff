@@ -88,6 +88,7 @@ impl Vote {
         round: Round,
         author: PublicKey,
         epoch: EpochNumber,
+        epoch_concluded: bool,
         secret: &SecretKey,
     ) -> Self {
         let vote = Self {
@@ -95,6 +96,7 @@ impl Vote {
             round,
             author,
             epoch,
+            epoch_concluded,
             signature: Signature::default(),
         };
         let signature = Signature::new(&vote.digest(), &secret);
@@ -114,6 +116,7 @@ impl Timeout {
         round: Round,
         author: PublicKey,
         epoch: EpochNumber,
+        epoch_concluded: bool,
         secret: &SecretKey,
     ) -> Self {
         let timeout = Self {
@@ -121,6 +124,7 @@ impl Timeout {
             round,
             author,
             epoch,
+            epoch_concluded,
             signature: Signature::default(),
         };
         let signature = Signature::new(&timeout.digest(), &secret);
@@ -154,7 +158,7 @@ pub fn block() -> Block {
 // Fixture.
 pub fn vote() -> Vote {
     let (public_key, secret_key) = keys().pop().unwrap();
-    Vote::new_from_key(block().digest(), 1, public_key, 1, &secret_key)
+    Vote::new_from_key(block().digest(), 1, public_key, 1, false, &secret_key)
 }
 
 // Fixture.
@@ -163,6 +167,7 @@ pub fn qc() -> QC {
         hash: Digest::default(),
         round: 1,
         epoch: 1,
+        epoch_concluded: false,
         votes: Vec::new(),
     };
     let digest = qc.digest();
@@ -199,6 +204,7 @@ pub fn chain(keys: Vec<(PublicKey, SecretKey)>) -> Vec<Block> {
                 hash: block.digest(),
                 round: block.round,
                 epoch: 1,
+                epoch_concluded: false,
                 votes: Vec::new(),
             };
             let digest = qc.digest();

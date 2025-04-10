@@ -15,19 +15,63 @@ use crypto::Hash as _;
 use crypto::{PublicKey, SignatureService};
 use log::{debug, error, info, warn};
 use network::SimpleSender;
-use std::cmp::max;
 use std::collections::VecDeque;
-use store::Store;
+use store::{Store, EPOCH_KEY};
 use tokio::sync::mpsc::{Receiver, Sender};
 
 #[cfg(test)]
 #[path = "tests/core_tests.rs"]
 pub mod core_tests;
 
+/// Takes a tuple consisting of epoch and round and returns the subsequent tuple.
+/// If there is no epoch_len specified, i.e. `epoch_len == None`, the next tuple is just the round incremented by one.
+/// Otherwise,
+pub fn next(epoch_len: Option<u64>, epoch: EpochNumber, round: Round) -> (EpochNumber, Round) {
+    if epoch_len.is_some_and(|epoch_len| round == epoch_len) {
+        (epoch + 1, 1)
+    } else {
+        (epoch, round + 1)
+    }
+}
+
+/// Takes two tuples, `a` and `b`, consisting round and epoch and returns true if `b` is the direct successor of `a`.
+pub fn is_subsequent(
+    epoch_len: Option<u64>,
+    a_epoch: EpochNumber,
+    a_round: Round,
+    b_epoch: EpochNumber,
+    b_round: Round,
+) -> bool {
+    if epoch_len.is_some_and(|epoch_len| a_round == epoch_len) {
+        a_epoch + 1 == b_epoch && b_round == 1
+    } else {
+        a_round + 1 == b_round
+    }
+}
+
+/// Takes two tuples, `a` and `b`, consisting of round and epoch and returns true if `a` is before `b`.
+pub fn is_before(
+    epoch_len: Option<u64>,
+    a_epoch: EpochNumber,
+    a_round: Round,
+    b_epoch: EpochNumber,
+    b_round: Round,
+) -> bool {
+    match epoch_len {
+        Some(epoch_len) => {
+            a_epoch < b_epoch
+                || a_epoch == b_epoch && a_round < b_round
+                || a_round == epoch_len && a_epoch + 1 == b_epoch && b_epoch == 1
+        }
+        None => a_round < b_round,
+    }
+}
+
 pub struct Core {
     name: PublicKey,
     committees: Committees,
     epoch: EpochNumber,
+    epoch_len: Option<u64>,
     store: Store,
     signature_service: SignatureService,
     leader_elector: LeaderElector,
@@ -39,7 +83,9 @@ pub struct Core {
     tx_commit: Sender<Block>,
     round: Round,
     last_voted_round: Round,
+    last_voted_epoch: EpochNumber,
     last_committed_round: Round,
+    last_committed_epoch: EpochNumber,
     high_qc: QC,
     timer: Timer,
     aggregator: Aggregator,
@@ -52,6 +98,7 @@ impl Core {
         name: PublicKey,
         committees: Committees,
         epoch: EpochNumber,
+        epoch_len: Option<u64>,
         signature_service: SignatureService,
         store: Store,
         leader_elector: LeaderElector,
@@ -68,6 +115,7 @@ impl Core {
                 name,
                 committees: committees.clone(),
                 epoch,
+                epoch_len,
                 signature_service,
                 store,
                 leader_elector,
@@ -79,7 +127,9 @@ impl Core {
                 tx_commit,
                 round: 1,
                 last_voted_round: 0,
+                last_voted_epoch: 0,
                 last_committed_round: 0,
+                last_committed_epoch: 0,
                 high_qc: QC::genesis(),
                 timer: Timer::new(timeout_delay),
                 aggregator: Aggregator::new(committees),
@@ -96,17 +146,65 @@ impl Core {
         self.store.write(key, value).await;
     }
 
-    fn increase_last_voted_round(&mut self, target: Round) {
-        self.last_voted_round = max(self.last_voted_round, target);
+    async fn update_epoch(&mut self, epoch: &EpochNumber) {
+        self.store
+            .write(EPOCH_KEY.into(), epoch.to_be_bytes().into())
+            .await;
+        self.epoch = epoch.to_owned();
+    }
+
+    fn increase_last_voted(&mut self, target_epoch: EpochNumber, target_round: Round) {
+        if is_before(
+            self.epoch_len,
+            self.last_voted_epoch,
+            self.last_voted_round,
+            target_epoch,
+            target_round,
+        ) {
+            self.last_voted_epoch = target_epoch;
+            self.last_voted_round = target_round;
+        }
     }
 
     async fn make_vote(&mut self, block: &Block) -> Option<Vote> {
         // Check if we can vote for this block.
-        let safety_rule_1 = block.round > self.last_voted_round;
-        let mut safety_rule_2 = block.qc.round + 1 == block.round;
+        let safety_rule_1 = is_before(
+            self.epoch_len,
+            self.last_voted_epoch,
+            self.last_voted_round,
+            block.epoch,
+            block.round,
+        );
+        let mut safety_rule_2 = is_subsequent(
+            self.epoch_len,
+            block.qc.epoch,
+            block.qc.round,
+            block.epoch,
+            block.round,
+        );
         if let Some(ref tc) = block.tc {
-            let mut can_extend = tc.round + 1 == block.round;
-            can_extend &= block.qc.round >= *tc.high_qc_rounds().iter().max().expect("Empty TC");
+            let mut can_extend =
+                is_subsequent(self.epoch_len, tc.epoch, tc.round, block.epoch, block.round);
+
+            let mut highest = None;
+
+            for (epoch, round) in tc.high_qc_rounds() {
+                match highest {
+                    None => {
+                        highest = Some((epoch, round));
+                    }
+                    Some((highest_epoch, highest_round)) => {
+                        if is_before(self.epoch_len, highest_epoch, highest_round, epoch, round) {
+                            highest = Some((highest_epoch, highest_round));
+                        }
+                    }
+                }
+            }
+
+            let highest = highest.expect("Empty TC");
+            can_extend &= block.qc.epoch > highest.0
+                || block.qc.epoch == highest.0 && block.qc.round >= highest.1;
+
             safety_rule_2 |= can_extend;
         }
         if !(safety_rule_1 && safety_rule_2) {
@@ -114,20 +212,45 @@ impl Core {
         }
 
         // Ensure we won't vote for contradicting blocks.
-        self.increase_last_voted_round(block.round);
+        self.increase_last_voted(block.epoch, block.round);
+
         // TODO [issue #15]: Write to storage preferred_round and last_voted_round.
         Some(Vote::new(block, self.name, self.signature_service.clone()).await)
     }
 
     async fn commit(&mut self, block: Block) -> ConsensusResult<()> {
-        if self.last_committed_round >= block.round {
+        if block.epoch_concluded && self.epoch_len.is_none() {
+            error!("Tried to commit to epoch change block but epoch changes are not enabled");
+            return Err(ConsensusError::InvalidPayload);
+        }
+
+        if is_before(
+            self.epoch_len,
+            block.epoch,
+            block.round,
+            self.last_committed_epoch,
+            self.last_committed_round,
+        ) {
             return Ok(());
         }
 
         // Ensure we commit the entire chain. This is needed after view-change.
         let mut to_commit = VecDeque::new();
         let mut parent = block.clone();
-        while self.last_committed_round + 1 < parent.round {
+
+        let next_after_last_committed = next(
+            self.epoch_len,
+            self.last_committed_epoch,
+            self.last_committed_round,
+        );
+
+        while is_before(
+            self.epoch_len,
+            next_after_last_committed.0,
+            next_after_last_committed.1,
+            parent.epoch,
+            parent.round,
+        ) {
             let ancestor = self
                 .synchronizer
                 .get_parent_block(&parent)
@@ -140,6 +263,7 @@ impl Core {
 
         // Save the last committed block.
         self.last_committed_round = block.round;
+        self.last_committed_epoch = block.epoch;
 
         // Send all the newly committed blocks to the node's application layer.
         while let Some(block) = to_commit.pop_back() {
@@ -161,21 +285,37 @@ impl Core {
     }
 
     fn update_high_qc(&mut self, qc: &QC) {
-        if qc.round > self.high_qc.round {
+        if is_before(
+            self.epoch_len,
+            self.high_qc.epoch,
+            self.high_qc.round,
+            qc.epoch,
+            qc.round,
+        ) {
             self.high_qc = qc.clone();
         }
     }
 
     async fn local_timeout_round(&mut self) -> ConsensusResult<()> {
-        warn!("Timeout reached for round {}", self.round);
+        warn!(
+            "Timeout reached for epoch {} round {}",
+            self.epoch, self.round
+        );
 
         // Increase the last voted round.
-        self.increase_last_voted_round(self.round);
+        self.increase_last_voted(self.epoch, self.round);
 
+        let epoch_concluded;
+        if matches!(self.epoch_len, Some(epoch_len) if self.round == epoch_len) {
+            epoch_concluded = true;
+        } else {
+            epoch_concluded = false;
+        }
         // Make a timeout message.
         let timeout = Timeout::new(
             self.high_qc.clone(),
             self.epoch,
+            epoch_concluded,
             self.round,
             self.name,
             self.signature_service.clone(),
@@ -210,8 +350,8 @@ impl Core {
 
     #[async_recursion]
     async fn handle_vote(&mut self, vote: &Vote) -> ConsensusResult<()> {
-        debug!("Processing {:?}", vote);
-        if vote.round < self.round {
+        debug!("Processing Vote {:?}", vote);
+        if vote.epoch != self.epoch || vote.round < self.round {
             return Ok(());
         }
 
@@ -234,8 +374,8 @@ impl Core {
     }
 
     async fn handle_timeout(&mut self, timeout: &Timeout) -> ConsensusResult<()> {
-        debug!("Processing {:?}", timeout);
-        if timeout.round < self.round {
+        debug!("Processing Timeout {:?}", timeout);
+        if timeout.epoch != self.epoch || timeout.round < self.round {
             return Ok(());
         }
 
@@ -255,7 +395,8 @@ impl Core {
                 .ok_or(ConsensusError::UnknownCommittee(self.epoch))?;
 
             // Try to advance the round.
-            self.advance_round(tc.round).await;
+            self.advance_round(tc.round, tc.epoch_concluded, tc.epoch)
+                .await;
 
             // Broadcast the TC.
             debug!("Broadcasting {:?}", tc);
@@ -279,14 +420,20 @@ impl Core {
     }
 
     #[async_recursion]
-    async fn advance_round(&mut self, round: Round) {
-        if round < self.round {
+    async fn advance_round(&mut self, round: Round, epoch_concluded: bool, epoch: EpochNumber) {
+        if epoch != self.epoch || round < self.round {
             return;
         }
         // Reset the timer and advance round.
         self.timer.reset();
-        self.round = round + 1;
-        debug!("Moved to round {}", self.round);
+        if epoch_concluded {
+            self.round = 1;
+            self.update_epoch(&(epoch + 1)).await;
+            debug!("Moved to epoch {} round {}", epoch + 1, self.round);
+        } else {
+            self.round = round + 1;
+            debug!("Moved to round {}", self.round);
+        }
 
         // Cleanup the vote aggregator.
         self.aggregator.cleanup(&self.epoch, &self.round);
@@ -294,15 +441,35 @@ impl Core {
 
     #[async_recursion]
     async fn generate_proposal(&mut self, tc: Option<TC>) {
-        self.tx_proposer
-            .send(ProposerMessage::Make(
-                self.epoch,
-                self.round,
-                self.high_qc.clone(),
-                tc,
-            ))
-            .await
-            .expect("Failed to send message to proposer");
+        if self
+            .epoch_len
+            .is_none_or(|epoch_len| self.round < epoch_len)
+        {
+            self.tx_proposer
+                .send(ProposerMessage::Make(
+                    self.epoch,
+                    self.round,
+                    self.high_qc.clone(),
+                    tc,
+                ))
+                .await
+                .expect("Failed to send message to proposer");
+        } else if self
+            .epoch_len
+            .is_some_and(|epoch_len| epoch_len == self.round)
+        {
+            self.tx_proposer
+                .send(ProposerMessage::MakeEpochChange(
+                    self.epoch,
+                    self.round,
+                    self.high_qc.clone(),
+                    tc,
+                ))
+                .await
+                .expect("Failed to send message to proposer");
+        } else if let Some(epoch_len) = self.epoch_len {
+            unreachable!("Must not exceed round {} in any round", epoch_len)
+        }
     }
 
     async fn cleanup_proposer(&mut self, b0: &Block, b1: &Block, block: &Block) {
@@ -320,13 +487,14 @@ impl Core {
     }
 
     async fn process_qc(&mut self, qc: &QC) {
-        self.advance_round(qc.round).await;
+        self.advance_round(qc.round, qc.epoch_concluded, qc.epoch)
+            .await;
         self.update_high_qc(qc);
     }
 
     #[async_recursion]
     async fn process_block(&mut self, block: &Block) -> ConsensusResult<()> {
-        debug!("Processing {:?}", block);
+        debug!("Processing Block {:?}", block);
 
         // Let's see if we have the last three ancestors of the block, that is:
         //      b0 <- |qc0; b1| <- |qc1; block|
@@ -348,9 +516,9 @@ impl Core {
                 ConsensusError::MissingEpochBumpAfterEpochChange(b1.epoch)
             );
             ensure!(
-                block.round == 0,
+                block.round == 1,
                 ConsensusError::MissingRoundsResetAfterEpochChange(b1.epoch)
-            )
+            );
         }
 
         // Store the block only if we have already processed all its ancestors.
@@ -360,7 +528,7 @@ impl Core {
 
         // Check if we can commit the head of the 2-chain.
         // Note that we commit blocks only if we have all its ancestors.
-        if b0.round + 1 == b1.round {
+        if is_subsequent(self.epoch_len, b0.epoch, b0.round, b1.epoch, b1.round) {
             self.mempool_driver.cleanup(b0.round).await;
             self.commit(b0).await?;
         }
@@ -417,7 +585,8 @@ impl Core {
 
         // Process the TC (if any). This may also allow us to advance round.
         if let Some(ref tc) = block.tc {
-            self.advance_round(tc.round).await;
+            self.advance_round(tc.round, tc.epoch_concluded, tc.epoch)
+                .await;
         }
 
         // Let's see if we have the block's data. If we don't, the mempool
@@ -433,10 +602,11 @@ impl Core {
 
     async fn handle_tc(&mut self, tc: TC) -> ConsensusResult<()> {
         tc.verify(&self.committees)?;
-        if tc.round < self.round {
+        if tc.epoch != self.epoch || tc.round < self.round {
             return Ok(());
         }
-        self.advance_round(tc.round).await;
+        self.advance_round(tc.round, tc.epoch_concluded, tc.epoch)
+            .await;
         if self.name == self.leader_elector.get_leader(self.epoch, self.round) {
             self.generate_proposal(Some(tc)).await;
         }

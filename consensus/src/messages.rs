@@ -4,6 +4,7 @@ use crate::error::{ConsensusError, ConsensusResult};
 use crypto::{Digest, Hash, PublicKey, Signature, SignatureService};
 use ed25519_dalek::Digest as _;
 use ed25519_dalek::Sha512;
+use log::error;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::convert::TryInto;
@@ -97,6 +98,11 @@ impl Hash for Block {
         hasher.update(self.author.0);
         hasher.update(self.round.to_le_bytes());
         hasher.update(self.epoch.to_le_bytes());
+        if self.epoch_concluded {
+            hasher.update([1u8]);
+        } else {
+            hasher.update([0u8]);
+        }
         for x in &self.payload {
             hasher.update(x);
         }
@@ -109,11 +115,13 @@ impl fmt::Debug for Block {
     fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
         write!(
             f,
-            "{}: B({}, {}, {:?}, {})",
+            "{}: B({}, epoch {} round {}, {:?}, round_concluded {}, {})",
             self.digest(),
             self.author,
+            self.epoch,
             self.round,
             self.qc,
+            self.epoch_concluded,
             self.payload.iter().map(|x| x.size()).sum::<usize>(),
         )
     }
@@ -130,6 +138,7 @@ pub struct Vote {
     pub hash: Digest,
     pub round: Round,
     pub epoch: EpochNumber,
+    pub epoch_concluded: bool,
     pub author: PublicKey,
     pub signature: Signature,
 }
@@ -143,6 +152,7 @@ impl Vote {
         let vote = Self {
             hash: block.digest(),
             epoch: block.epoch,
+            epoch_concluded: block.epoch_concluded,
             round: block.round,
             author,
             signature: Signature::default(),
@@ -162,7 +172,9 @@ impl Vote {
         );
 
         // Check the signature.
-        self.signature.verify(&self.digest(), &self.author)?;
+        self.signature
+            .verify(&self.digest(), &self.author)
+            .inspect_err(|_| error!("Failed to verify signature for Vote {self:?}"))?;
         Ok(())
     }
 }
@@ -173,6 +185,11 @@ impl Hash for Vote {
         hasher.update(&self.hash);
         hasher.update(self.round.to_le_bytes());
         hasher.update(self.epoch.to_le_bytes());
+        if self.epoch_concluded {
+            hasher.update([1u8]);
+        } else {
+            hasher.update([0u8]);
+        }
         Digest(hasher.finalize().as_slice()[..32].try_into().unwrap())
     }
 }
@@ -187,6 +204,7 @@ impl fmt::Debug for Vote {
 pub struct QC {
     pub hash: Digest,
     pub epoch: EpochNumber,
+    pub epoch_concluded: bool,
     pub round: Round,
     pub votes: Vec<(PublicKey, Signature)>,
 }
@@ -230,6 +248,11 @@ impl Hash for QC {
         hasher.update(&self.hash);
         hasher.update(self.round.to_le_bytes());
         hasher.update(self.epoch.to_le_bytes());
+        if self.epoch_concluded {
+            hasher.update([1u8]);
+        } else {
+            hasher.update([0u8])
+        }
         Digest(hasher.finalize().as_slice()[..32].try_into().unwrap())
     }
 }
@@ -250,6 +273,7 @@ impl PartialEq for QC {
 pub struct Timeout {
     pub high_qc: QC,
     pub epoch: EpochNumber,
+    pub epoch_concluded: bool,
     pub round: Round,
     pub author: PublicKey,
     pub signature: Signature,
@@ -259,6 +283,7 @@ impl Timeout {
     pub async fn new(
         high_qc: QC,
         epoch: EpochNumber,
+        epoch_concluded: bool,
         round: Round,
         author: PublicKey,
         mut signature_service: SignatureService,
@@ -267,6 +292,7 @@ impl Timeout {
             high_qc,
             round,
             epoch,
+            epoch_concluded,
             author,
             signature: Signature::default(),
         };
@@ -289,7 +315,9 @@ impl Timeout {
         );
 
         // Check the signature.
-        self.signature.verify(&self.digest(), &self.author)?;
+        self.signature
+            .verify(&self.digest(), &self.author)
+            .inspect_err(|_| error!("Failed to verify signatuere for Timeout {self:?}"))?;
 
         // Check the embedded QC.
         if self.high_qc != QC::genesis() {
@@ -304,7 +332,13 @@ impl Hash for Timeout {
         let mut hasher = Sha512::new();
         hasher.update(self.round.to_le_bytes());
         hasher.update(self.epoch.to_le_bytes());
+        if self.epoch_concluded {
+            hasher.update([1u8]);
+        } else {
+            hasher.update([0u8]);
+        }
         hasher.update(self.high_qc.round.to_le_bytes());
+        hasher.update(self.high_qc.epoch.to_le_bytes());
         Digest(hasher.finalize().as_slice()[..32].try_into().unwrap())
     }
 }
@@ -318,8 +352,9 @@ impl fmt::Debug for Timeout {
 #[derive(Clone, Serialize, Deserialize)]
 pub struct TC {
     pub epoch: EpochNumber,
+    pub epoch_concluded: bool,
     pub round: Round,
-    pub votes: Vec<(PublicKey, Signature, Round)>,
+    pub votes: Vec<(PublicKey, Signature, EpochNumber, Round)>,
 }
 
 impl TC {
@@ -330,7 +365,7 @@ impl TC {
         // Ensure the QC has a quorum.
         let mut weight = 0;
         let mut used = HashSet::new();
-        for (name, _, _) in self.votes.iter() {
+        for (name, _, _, _) in self.votes.iter() {
             ensure!(!used.contains(name), ConsensusError::AuthorityReuse(*name));
             let voting_rights = tc_committee.stake(name);
             ensure!(voting_rights > 0, ConsensusError::UnknownAuthority(*name));
@@ -343,23 +378,38 @@ impl TC {
         );
 
         // Check the signatures.
-        for (author, signature, high_qc_round) in &self.votes {
+        for (author, signature, high_qc_epoch, high_qc_round) in &self.votes {
             let mut hasher = Sha512::new();
             hasher.update(self.round.to_le_bytes());
+            hasher.update(self.epoch.to_le_bytes());
+            if self.epoch_concluded {
+                hasher.update([1u8]);
+            } else {
+                hasher.update([0u8]);
+            }
             hasher.update(high_qc_round.to_le_bytes());
+            hasher.update(high_qc_epoch.to_le_bytes());
             let digest = Digest(hasher.finalize().as_slice()[..32].try_into().unwrap());
-            signature.verify(&digest, author)?;
+            signature.verify(&digest, author).inspect_err(|_| {
+                error!("Failed to verify signature for TimeoutCertificate {self:?}")
+            })?;
         }
         Ok(())
     }
 
-    pub fn high_qc_rounds(&self) -> Vec<Round> {
-        self.votes.iter().map(|(_, _, r)| r).cloned().collect()
+    pub fn high_qc_rounds(&self) -> Vec<(EpochNumber, Round)> {
+        self.votes.iter().map(|(_, _, e, r)| (*e, *r)).collect()
     }
 }
 
 impl fmt::Debug for TC {
     fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
-        write!(f, "TC({}, {:?})", self.round, self.high_qc_rounds())
+        write!(
+            f,
+            "TC(epoch {} round {}, {:?})",
+            self.epoch,
+            self.round,
+            self.high_qc_rounds()
+        )
     }
 }
