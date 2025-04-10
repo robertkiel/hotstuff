@@ -91,7 +91,6 @@ class Committee:
 
 class LocalCommittee(Committee):
     def __init__(self, epochs, names, port):
-        print('in __init__', epochs)
         assert isinstance(names, list) and all(
             isinstance(x, str) for x in names)
         assert isinstance(port, int)
