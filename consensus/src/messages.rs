@@ -111,6 +111,7 @@ impl Hash for Block {
             hasher.update(x);
         }
         hasher.update(&self.qc.hash);
+        hasher.update(&self.snapshot);
         Digest(hasher.finalize().as_slice()[..32].try_into().unwrap())
     }
 }
