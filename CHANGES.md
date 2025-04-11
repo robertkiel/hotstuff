@@ -66,6 +66,7 @@ The script has been adapted to trigger an epoch change every `1024` rounds.
 Preparation (requires installed Python and Cargo + Rust compiler)
 
 ```sh
+git clone --branch feat/epoch-change https://github.com/robertkiel/hotstuff.git
 cd hotstuff/benchmark
 pip install -r requirements.txt
 ```
