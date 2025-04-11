@@ -97,6 +97,7 @@ impl QCMaker {
                 round: vote.round,
                 epoch: vote.epoch,
                 epoch_concluded: vote.epoch_concluded,
+                last_snapshot: vote.last_snapshot,
                 votes: self.votes.clone(),
             }));
         }
@@ -151,6 +152,7 @@ impl TCMaker {
                 epoch: timeout.epoch,
                 epoch_concluded: timeout.epoch_concluded,
                 round: timeout.round,
+                last_snapshot: timeout.last_snapshot,
                 votes: self.votes.clone(),
             }));
         }

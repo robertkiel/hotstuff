@@ -1,6 +1,7 @@
 use crate::config::{Committees, EpochNumber};
 use crate::consensus::Round;
 use crate::error::{ConsensusError, ConsensusResult};
+use crate::snapshot::update_snapshot;
 use crypto::{Digest, Hash, PublicKey, Signature, SignatureService};
 use ed25519_dalek::Digest as _;
 use ed25519_dalek::Sha512;
@@ -24,6 +25,7 @@ pub struct Block {
     pub signature: Signature,
     pub epoch: EpochNumber,
     pub epoch_concluded: bool,
+    pub snapshot: Digest,
 }
 
 impl Block {
@@ -35,6 +37,7 @@ impl Block {
         payload: Vec<Digest>,
         epoch: EpochNumber,
         epoch_concluded: bool,
+        snapshot: Digest,
         mut signature_service: SignatureService,
     ) -> Self {
         let block = Self {
@@ -42,6 +45,7 @@ impl Block {
             tc,
             author,
             round,
+            snapshot: update_snapshot(&snapshot, &payload),
             payload,
             epoch,
             epoch_concluded,
@@ -139,6 +143,7 @@ pub struct Vote {
     pub round: Round,
     pub epoch: EpochNumber,
     pub epoch_concluded: bool,
+    pub last_snapshot: Digest,
     pub author: PublicKey,
     pub signature: Signature,
 }
@@ -154,6 +159,7 @@ impl Vote {
             epoch: block.epoch,
             epoch_concluded: block.epoch_concluded,
             round: block.round,
+            last_snapshot: block.snapshot.to_owned(),
             author,
             signature: Signature::default(),
         };
@@ -190,6 +196,7 @@ impl Hash for Vote {
         } else {
             hasher.update([0u8]);
         }
+        hasher.update(&self.last_snapshot);
         Digest(hasher.finalize().as_slice()[..32].try_into().unwrap())
     }
 }
@@ -205,6 +212,7 @@ pub struct QC {
     pub hash: Digest,
     pub epoch: EpochNumber,
     pub epoch_concluded: bool,
+    pub last_snapshot: Digest,
     pub round: Round,
     pub votes: Vec<(PublicKey, Signature)>,
 }
@@ -253,6 +261,7 @@ impl Hash for QC {
         } else {
             hasher.update([0u8])
         }
+        hasher.update(&self.last_snapshot);
         Digest(hasher.finalize().as_slice()[..32].try_into().unwrap())
     }
 }
@@ -274,6 +283,7 @@ pub struct Timeout {
     pub high_qc: QC,
     pub epoch: EpochNumber,
     pub epoch_concluded: bool,
+    pub last_snapshot: Digest,
     pub round: Round,
     pub author: PublicKey,
     pub signature: Signature,
@@ -284,6 +294,7 @@ impl Timeout {
         high_qc: QC,
         epoch: EpochNumber,
         epoch_concluded: bool,
+        last_snapshot: Digest,
         round: Round,
         author: PublicKey,
         mut signature_service: SignatureService,
@@ -293,6 +304,7 @@ impl Timeout {
             round,
             epoch,
             epoch_concluded,
+            last_snapshot,
             author,
             signature: Signature::default(),
         };
@@ -339,6 +351,7 @@ impl Hash for Timeout {
         }
         hasher.update(self.high_qc.round.to_le_bytes());
         hasher.update(self.high_qc.epoch.to_le_bytes());
+        hasher.update(&self.last_snapshot);
         Digest(hasher.finalize().as_slice()[..32].try_into().unwrap())
     }
 }
@@ -353,6 +366,7 @@ impl fmt::Debug for Timeout {
 pub struct TC {
     pub epoch: EpochNumber,
     pub epoch_concluded: bool,
+    pub last_snapshot: Digest,
     pub round: Round,
     pub votes: Vec<(PublicKey, Signature, EpochNumber, Round)>,
 }
@@ -389,6 +403,7 @@ impl TC {
             }
             hasher.update(high_qc_round.to_le_bytes());
             hasher.update(high_qc_epoch.to_le_bytes());
+            hasher.update(&self.last_snapshot);
             let digest = Digest(hasher.finalize().as_slice()[..32].try_into().unwrap());
             signature.verify(&digest, author).inspect_err(|_| {
                 error!("Failed to verify signature for TimeoutCertificate {self:?}")

@@ -75,6 +75,7 @@ impl Node {
             committee.consensus,
             epoch,
             parameters.consensus.epoch_len,
+            /* tx snapshot */ None,
             parameters.consensus,
             signature_service,
             store,

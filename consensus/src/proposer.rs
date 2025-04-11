@@ -13,8 +13,8 @@ use tokio::sync::mpsc::{Receiver, Sender};
 
 #[derive(Debug)]
 pub enum ProposerMessage {
-    Make(EpochNumber, Round, QC, Option<TC>),
-    MakeEpochChange(EpochNumber, Round, QC, Option<TC>),
+    Make(EpochNumber, Round, QC, Option<TC>, Digest),
+    MakeEpochChange(EpochNumber, Round, QC, Option<TC>, Digest),
     Cleanup(Vec<Digest>),
 }
 
@@ -67,6 +67,7 @@ impl Proposer {
         qc: QC,
         tc: Option<TC>,
         end_epoch: bool,
+        last_snapshot: Digest,
     ) {
         // Generate a new block.
         let block = Block::new(
@@ -77,6 +78,7 @@ impl Proposer {
             /* payload */ self.buffer.drain().collect(),
             epoch,
             end_epoch,
+            last_snapshot,
             self.signature_service.clone(),
         )
         .await;
@@ -145,8 +147,8 @@ impl Proposer {
                     //}
                 },
                 Some(message) = self.rx_message.recv() => match message {
-                    ProposerMessage::Make(epoch, round, qc, tc) => self.make_block(epoch,round, qc, tc, false).await,
-                    ProposerMessage::MakeEpochChange(epoch, round, qc, tc) => self.make_block(epoch, round, qc, tc, true).await,
+                    ProposerMessage::Make(epoch, round, qc, tc, last_snapshot) => self.make_block(epoch,round, qc, tc, false, last_snapshot).await,
+                    ProposerMessage::MakeEpochChange(epoch, round, qc, tc, last_snapshot) => self.make_block(epoch, round, qc, tc, true, last_snapshot).await,
                     ProposerMessage::Cleanup(digests) => {
                         for x in &digests {
                             self.buffer.remove(x);

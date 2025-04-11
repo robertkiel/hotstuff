@@ -6,12 +6,13 @@ use crate::leader::LeaderElector;
 use crate::mempool::MempoolDriver;
 use crate::messages::{Block, Timeout, Vote, QC, TC};
 use crate::proposer::ProposerMessage;
+use crate::snapshot::update_snapshot;
 use crate::synchronizer::Synchronizer;
 use crate::timer::Timer;
 use crate::EpochNumber;
 use async_recursion::async_recursion;
 use bytes::Bytes;
-use crypto::Hash as _;
+use crypto::{Digest, Hash as _};
 use crypto::{PublicKey, SignatureService};
 use log::{debug, error, info, warn};
 use network::SimpleSender;
@@ -86,6 +87,7 @@ pub struct Core {
     last_voted_epoch: EpochNumber,
     last_committed_round: Round,
     last_committed_epoch: EpochNumber,
+    last_snapshot: Option<Digest>,
     high_qc: QC,
     timer: Timer,
     aggregator: Aggregator,
@@ -99,6 +101,7 @@ impl Core {
         committees: Committees,
         epoch: EpochNumber,
         epoch_len: Option<u64>,
+        last_snapshot: Option<Digest>,
         signature_service: SignatureService,
         store: Store,
         leader_elector: LeaderElector,
@@ -125,6 +128,7 @@ impl Core {
                 rx_loopback,
                 tx_proposer,
                 tx_commit,
+                last_snapshot,
                 round: 1,
                 last_voted_round: 0,
                 last_voted_epoch: 0,
@@ -316,6 +320,10 @@ impl Core {
             self.high_qc.clone(),
             self.epoch,
             epoch_concluded,
+            self.last_snapshot
+                .as_ref()
+                .map(|s| s.to_owned())
+                .unwrap_or_default(),
             self.round,
             self.name,
             self.signature_service.clone(),
@@ -367,7 +375,8 @@ impl Core {
 
             // Make a new block if we are the next leader.
             if self.name == self.leader_elector.get_leader(self.epoch, self.round) {
-                self.generate_proposal(None).await;
+                self.generate_proposal(None, vote.last_snapshot.to_owned())
+                    .await;
             }
         }
         Ok(())
@@ -395,8 +404,13 @@ impl Core {
                 .ok_or(ConsensusError::UnknownCommittee(self.epoch))?;
 
             // Try to advance the round.
-            self.advance_round(tc.round, tc.epoch_concluded, tc.epoch)
-                .await;
+            self.advance_round(
+                tc.round,
+                tc.epoch_concluded,
+                tc.epoch,
+                tc.last_snapshot.to_owned(),
+            )
+            .await;
 
             // Broadcast the TC.
             debug!("Broadcasting {:?}", tc);
@@ -413,14 +427,21 @@ impl Core {
 
             // Make a new block if we are the next leader.
             if self.name == self.leader_elector.get_leader(self.epoch, self.round) {
-                self.generate_proposal(Some(tc)).await;
+                let last_snapshot = tc.last_snapshot.to_owned();
+                self.generate_proposal(Some(tc), last_snapshot).await;
             }
         }
         Ok(())
     }
 
     #[async_recursion]
-    async fn advance_round(&mut self, round: Round, epoch_concluded: bool, epoch: EpochNumber) {
+    async fn advance_round(
+        &mut self,
+        round: Round,
+        epoch_concluded: bool,
+        epoch: EpochNumber,
+        last_snapshot: Digest,
+    ) {
         if epoch != self.epoch || round < self.round {
             return;
         }
@@ -428,10 +449,12 @@ impl Core {
         self.timer.reset();
         if epoch_concluded {
             self.round = 1;
+            self.last_snapshot = None;
             self.update_epoch(&(epoch + 1)).await;
             debug!("Moved to epoch {} round {}", epoch + 1, self.round);
         } else {
             self.round = round + 1;
+            self.last_snapshot = Some(last_snapshot);
             debug!("Moved to round {}", self.round);
         }
 
@@ -440,7 +463,7 @@ impl Core {
     }
 
     #[async_recursion]
-    async fn generate_proposal(&mut self, tc: Option<TC>) {
+    async fn generate_proposal(&mut self, tc: Option<TC>, last_snapshot: Digest) {
         if self
             .epoch_len
             .is_none_or(|epoch_len| self.round < epoch_len)
@@ -451,9 +474,14 @@ impl Core {
                     self.round,
                     self.high_qc.clone(),
                     tc,
+                    if self.round == 1 {
+                        Digest::default()
+                    } else {
+                        last_snapshot
+                    },
                 ))
                 .await
-                .expect("Failed to send message to proposer");
+                .expect("Failed to send message to proposer")
         } else if self
             .epoch_len
             .is_some_and(|epoch_len| epoch_len == self.round)
@@ -464,9 +492,10 @@ impl Core {
                     self.round,
                     self.high_qc.clone(),
                     tc,
+                    last_snapshot,
                 ))
                 .await
-                .expect("Failed to send message to proposer");
+                .expect("Failed to send message to proposer")
         } else if let Some(epoch_len) = self.epoch_len {
             unreachable!("Must not exceed round {} in any round", epoch_len)
         }
@@ -487,8 +516,13 @@ impl Core {
     }
 
     async fn process_qc(&mut self, qc: &QC) {
-        self.advance_round(qc.round, qc.epoch_concluded, qc.epoch)
-            .await;
+        self.advance_round(
+            qc.round,
+            qc.epoch_concluded,
+            qc.epoch,
+            qc.last_snapshot.to_owned(),
+        )
+        .await;
         self.update_high_qc(qc);
     }
 
@@ -509,8 +543,8 @@ impl Core {
             }
         };
 
-        // Last block concluded last epoch, so current epoch must be old epoch + 1.
         if b1.epoch_concluded {
+            // Last block concluded last epoch, so current epoch must be old epoch + 1.
             ensure!(
                 block.epoch == b1.epoch + 1,
                 ConsensusError::MissingEpochBumpAfterEpochChange(b1.epoch)
@@ -518,6 +552,15 @@ impl Core {
             ensure!(
                 block.round == 1,
                 ConsensusError::MissingRoundsResetAfterEpochChange(b1.epoch)
+            );
+            ensure!(
+                block.snapshot == update_snapshot(&Digest::default(), &block.payload,),
+                ConsensusError::InvalidSnapshot
+            );
+        } else {
+            ensure!(
+                block.snapshot == update_snapshot(&b1.snapshot, &block.payload,),
+                ConsensusError::InvalidSnapshot
             );
         }
 
@@ -585,8 +628,13 @@ impl Core {
 
         // Process the TC (if any). This may also allow us to advance round.
         if let Some(ref tc) = block.tc {
-            self.advance_round(tc.round, tc.epoch_concluded, tc.epoch)
-                .await;
+            self.advance_round(
+                tc.round,
+                tc.epoch_concluded,
+                tc.epoch,
+                tc.last_snapshot.to_owned(),
+            )
+            .await;
         }
 
         // Let's see if we have the block's data. If we don't, the mempool
@@ -605,10 +653,16 @@ impl Core {
         if tc.epoch != self.epoch || tc.round < self.round {
             return Ok(());
         }
-        self.advance_round(tc.round, tc.epoch_concluded, tc.epoch)
-            .await;
+        self.advance_round(
+            tc.round,
+            tc.epoch_concluded,
+            tc.epoch,
+            tc.last_snapshot.to_owned(),
+        )
+        .await;
         if self.name == self.leader_elector.get_leader(self.epoch, self.round) {
-            self.generate_proposal(Some(tc)).await;
+            let last_snapshot = tc.last_snapshot.to_owned();
+            self.generate_proposal(Some(tc), last_snapshot).await;
         }
         Ok(())
     }
@@ -618,7 +672,7 @@ impl Core {
         // Also, schedule a timer in case we don't hear from the leader.
         self.timer.reset();
         if self.name == self.leader_elector.get_leader(self.epoch, self.round) {
-            self.generate_proposal(None).await;
+            self.generate_proposal(None, Digest::default()).await;
         }
 
         // This is the main loop: it processes incoming blocks and votes,

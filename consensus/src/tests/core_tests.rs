@@ -45,6 +45,7 @@ fn core(
         committees,
         1,
         None,
+        None,
         signature_service,
         store,
         leader_elector,
@@ -85,6 +86,7 @@ async fn handle_proposal() {
         public_key,
         1,
         false,
+        block.snapshot.to_owned(),
         &secret_key,
     );
     let expected = bincode::serialize(&ConsensusMessage::Vote(vote)).unwrap();
@@ -116,7 +118,16 @@ async fn generate_proposal() {
     let (next_leader, next_leader_key) = leader_keys(2);
 
     // Make a block, votes, and QC.
-    let block = Block::new_from_key(QC::genesis(), leader, 1, Vec::new(), 1, false, &leader_key);
+    let block = Block::new_from_key(
+        QC::genesis(),
+        leader,
+        1,
+        Vec::new(),
+        1,
+        false,
+        Digest::default(),
+        &leader_key,
+    );
     let hash = block.digest();
     let votes: Vec<_> = keys()
         .iter()
@@ -127,6 +138,7 @@ async fn generate_proposal() {
                 *public_key,
                 1,
                 false,
+                Digest::default(),
                 &secret_key,
             )
         })
@@ -136,6 +148,7 @@ async fn generate_proposal() {
         round: block.round,
         epoch: block.epoch,
         epoch_concluded: block.epoch_concluded,
+        last_snapshot: Digest::default(),
         votes: votes
             .iter()
             .cloned()
@@ -159,10 +172,11 @@ async fn generate_proposal() {
 
     // Ensure the core sends a new block.
     match rx_proposer.recv().await.unwrap() {
-        ProposerMessage::Make(1, round, qc, tc) => {
+        ProposerMessage::Make(1, round, qc, tc, last_snapshot) => {
             assert_eq!(round, 2);
             assert_eq!(qc, hight_qc);
             assert!(tc.is_none());
+            assert_eq!(Digest::default(), last_snapshot);
         }
         _ => panic!("Unexpected protocol message"),
     }
@@ -206,7 +220,15 @@ async fn local_timeout_round() {
 
     // Make the timeout vote we expect to send.
     let (public_key, secret_key) = leader_keys(3);
-    let timeout = Timeout::new_from_key(QC::genesis(), 1, public_key, 1, false, &secret_key);
+    let timeout = Timeout::new_from_key(
+        QC::genesis(),
+        1,
+        public_key,
+        1,
+        false,
+        Digest::default(),
+        &secret_key,
+    );
     let expected = bincode::serialize(&ConsensusMessage::Timeout(timeout)).unwrap();
 
     // Run a core instance.

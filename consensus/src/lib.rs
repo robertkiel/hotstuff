@@ -9,6 +9,7 @@ mod leader;
 mod mempool;
 mod messages;
 mod proposer;
+mod snapshot;
 mod synchronizer;
 mod timer;
 

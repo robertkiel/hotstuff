@@ -1,6 +1,7 @@
 use crate::config::{Committee, Committees};
 use crate::consensus::Round;
 use crate::messages::{Block, Timeout, Vote, QC};
+use crate::snapshot::update_snapshot;
 use crate::EpochNumber;
 use bytes::Bytes;
 use crypto::Hash as _;
@@ -59,6 +60,7 @@ impl Block {
         payload: Vec<Digest>,
         epoch: EpochNumber,
         epoch_concluded: bool,
+        snapshot: Digest,
         secret: &SecretKey,
     ) -> Self {
         let block = Block {
@@ -69,6 +71,7 @@ impl Block {
             payload,
             epoch,
             epoch_concluded,
+            snapshot,
             signature: Signature::default(),
         };
         let signature = Signature::new(&block.digest(), secret);
@@ -89,6 +92,7 @@ impl Vote {
         author: PublicKey,
         epoch: EpochNumber,
         epoch_concluded: bool,
+        last_snapshot: Digest,
         secret: &SecretKey,
     ) -> Self {
         let vote = Self {
@@ -97,6 +101,7 @@ impl Vote {
             author,
             epoch,
             epoch_concluded,
+            last_snapshot,
             signature: Signature::default(),
         };
         let signature = Signature::new(&vote.digest(), &secret);
@@ -117,6 +122,7 @@ impl Timeout {
         author: PublicKey,
         epoch: EpochNumber,
         epoch_concluded: bool,
+        last_snapshot: Digest,
         secret: &SecretKey,
     ) -> Self {
         let timeout = Self {
@@ -125,6 +131,7 @@ impl Timeout {
             author,
             epoch,
             epoch_concluded,
+            last_snapshot,
             signature: Signature::default(),
         };
         let signature = Signature::new(&timeout.digest(), &secret);
@@ -151,6 +158,7 @@ pub fn block() -> Block {
         Vec::new(),
         1,
         false,
+        Digest::default(),
         &secret_key,
     )
 }
@@ -158,7 +166,15 @@ pub fn block() -> Block {
 // Fixture.
 pub fn vote() -> Vote {
     let (public_key, secret_key) = keys().pop().unwrap();
-    Vote::new_from_key(block().digest(), 1, public_key, 1, false, &secret_key)
+    Vote::new_from_key(
+        block().digest(),
+        1,
+        public_key,
+        1,
+        false,
+        Digest::default(),
+        &secret_key,
+    )
 }
 
 // Fixture.
@@ -168,6 +184,7 @@ pub fn qc() -> QC {
         round: 1,
         epoch: 1,
         epoch_concluded: false,
+        last_snapshot: Digest::default(),
         votes: Vec::new(),
     };
     let digest = qc.digest();
@@ -187,6 +204,11 @@ pub fn chain(keys: Vec<(PublicKey, SecretKey)>) -> Vec<Block> {
     keys.iter()
         .enumerate()
         .map(|(i, key)| {
+            let snapshot = if i == 0 {
+                &Digest::default()
+            } else {
+                &latest_qc.last_snapshot
+            };
             // Make a block.
             let (public_key, secret_key) = key;
             let block = Block::new_from_key(
@@ -196,6 +218,7 @@ pub fn chain(keys: Vec<(PublicKey, SecretKey)>) -> Vec<Block> {
                 Vec::new(),
                 1,
                 false,
+                update_snapshot(snapshot, &Vec::new()),
                 secret_key,
             );
 
@@ -205,6 +228,11 @@ pub fn chain(keys: Vec<(PublicKey, SecretKey)>) -> Vec<Block> {
                 round: block.round,
                 epoch: 1,
                 epoch_concluded: false,
+                last_snapshot: if i == 0 {
+                    Digest::default()
+                } else {
+                    block.snapshot.to_owned()
+                },
                 votes: Vec::new(),
             };
             let digest = qc.digest();

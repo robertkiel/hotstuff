@@ -74,4 +74,7 @@ pub enum ConsensusError {
 
     #[error("Epoch {0} got concluded but round counter was not reset")]
     MissingRoundsResetAfterEpochChange(EpochNumber),
+
+    #[error("Invalid snapshot")]
+    InvalidSnapshot,
 }
