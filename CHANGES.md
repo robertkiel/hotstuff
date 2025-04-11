@@ -31,7 +31,17 @@ Although the architecture supports different committees for each epoch, the curr
 
 # Fast sync
 
-In the moment that the last block of an epoch has been committed by the consensus nodes, the consensus nodes can batch all transactions included in that epoch and form a snapshot on the state at the end of this epoch. Non-consensus nodes can then query at pre-defined times the consensus nodes for latest snapshots. Instead of replaying all blocks and transactions, the nodes can adopt the new state, which is supposed to require much less computation and much less RPC calls.
+In the moment that the last block of an epoch has been committed by the consensus nodes, the consensus nodes can batch all transactions included in that epoch and form a snapshot on the state at the end of this epoch. The state is given by a snapshot mechanism as desribed in the next section. Non-consensus nodes can then query at pre-defined times the consensus nodes for latest snapshots. Instead of replaying all blocks and their corresponding consensus information including signature, the nodes can just replay the transactions in that epoch.
+
+# Snapshot mechanism ("Blockchain on Blockchain")
+
+To facilitate fast sync and to allow nodes to tustlessly replay transactions, each block includes a `snapshot` property that consists of a hash derived from current transactions and the previous snapshots in that epoch.
+
+```
+snapshot = hash ( old_snapshot, ...txs_hashes )
+```
+
+The new snapshot is computed by hashing the old snapshot together with the hashes of all transactions included in the block. By doing so, the `snapshot` property allows nodes to recompute the snapshot and check its hash against the stated snapshot in the block. This allows non-consensus node or external observers to validate the perceived list of transactions against the signed hash stated in the last block of the epoch.
 
 # Implementation tradeoffs
 
@@ -39,6 +49,7 @@ In the moment that the last block of an epoch has been committed by the consensu
 - The epoch length must be set a startup.
 - No dynamic epoch lengths
 - Although the committees might differ, the current implementation expects that all nodes from the previous committee are also part of the next committee. (Nodes cannot leave the consensus.)
+- Fast sync is not implemented, the nodes only maintain the snapshots.
 
 # Testing
 
