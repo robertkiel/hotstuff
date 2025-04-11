@@ -2,9 +2,11 @@
 
 Epochs partition the chain of blocks in chunks that can get batched together such that nodes joining the network can rely on repeated checkpoints, rather than downloading and replaying every block.
 
-An epoch starts by increasing the epoch counter by one and resettting the round counter to one. Nodes that are part of the committee which got assigned to this epoch, should propose and vote on blocks. Once an epoch got concluded, the next committee takes over and is responsible for producing and validating blocks. There are multiple possible ways to initiate the conclusion of an epoch, such as dynamically using system smart contracts or by statically following a hard-coded scheme. To keep things simple, in this implementation, epoch changes happen after a CLI-configurable amount of blocks. Please note that at the moment, there is no consensus on the utilized parameters, which means that all nodes participating in the network need to be start with the same epoch length.
+An epoch starts by increasing the epoch counter by one and resettting the round counter to one. Nodes that are part of the committee which got assigned to this epoch, should propose and vote on blocks. Once an epoch got concluded, the next committee takes over and is responsible for producing and validating blocks.
 
-```json
+There are multiple possible ways to initiate the conclusion of an epoch, such as dynamically using system smart contracts or by statically following a hard-coded scheme. To keep things simple, in this implementation, epoch changes happen after a CLI-configurable amount of blocks. Please note that at the moment, there is no consensus on the utilized parameters, which means that all nodes participating in the network need to be started with the same epoch length.
+
+```
 // content of the parameters.json file
 {
   "consensus": {
@@ -21,17 +23,21 @@ Note that if the `epoch_len` entry is missing, the nodes do not perform or accep
 cargo run --bin node run --parameters=./parameters.json # --keys= ... --store=... --committee=...
 ```
 
-The actual epoch change happens by the producer of the block which sets the added property `epoch_concluded` to `true` and thus signals to all other consensus nodes that this particular block has been the last block in this epoch. However, as the implementation does not support dynamically initiating epoch changes, other nodes will not vote for a block at the designated epoch change that does not come with the `epoch_concluded` property set to `true`. Once receiving the proposal by the block proposer, the nodes craft a `Vote` and send the vote the designated proposer of the next block. Note that the proposer is part of a different committee. The nodes thus need to know the upcoming committee in advance and further need to be able to figure out the proposer of the first block in the next epoch. The first proposer of the next interval then aggregates the votes by the nodes of the last epoch and forms a quorum certificate which will be then part of the upcoming next block. To mark the epoch change, the proposer increases the `epoch` counter by one and resets the `round` property to one.
+The actual epoch change happens by the producer of the block which sets the added property `epoch_concluded` to `true` and thus signals to all other consensus nodes that this particular block has been the last block in this epoch. However, as the implementation does not support dynamically initiating epoch changes, other nodes will refuse to vote for a block at the designated epoch change that does not come with the `epoch_concluded` property set to `true`. Once receiving the proposal by the block proposer, the nodes craft a `Vote` and send the vote the designated proposer of the next block.
+
+Note that the proposer is part of a different committee and might not be a member of the current committee. The nodes thus need to know the upcoming committee in advance and further need to be able to figure out the proposer of the first block in the next epoch.
+
+The first proposer of the next interval then aggregates the votes by the nodes of the last epoch and forms a quorum certificate which will be then part of the upcoming next block. To mark the epoch change, the proposer increases the `epoch` counter by one and resets the `round` property to one.
 
 # Committees
 
-In each epoch, there is one committee that is supposed to participate in the consensus. Once taking over from a previous committee, the proposer of the first block needs to verify the quorum certificate of the last block from the previous epoch. Nodes thus need to know which nodes in the previous committee have been eligible to participate in the consensus. To prevent non-consensus nodes from picking a different fork of the chain, consensus nodes need to check the quorum certificate carefully when proposing and voting for the first block in the new epoch.
+In each epoch, there is one committee that is supposed to participate in the consensus. Once taking over from a previous committee, the proposer of the first block needs to verify the quorum certificate of the last block from the previous epoch. For that reason, nodes need to know which nodes in the previous committee have been eligible to participate in the consensus of the last epoch. To prevent non-consensus nodes from picking a different fork of the chain, consensus nodes need to check the quorum certificate carefully when proposing and voting for the first block in the new epoch.
 
 Although the architecture supports different committees for each epoch, the current implementation assumes that nodes cannot leave consensus, i.e. it is expected that each nodes participating in the consensus will also be part of the next committee. However, the size of the committees might increase.
 
 # Fast sync
 
-In the moment that the last block of an epoch has been committed by the consensus nodes, the consensus nodes can batch all transactions included in that epoch and form a snapshot on the state at the end of this epoch. The state is given by a snapshot mechanism as desribed in the next section. Non-consensus nodes can then query at pre-defined times the consensus nodes for latest snapshots. Instead of replaying all blocks and their corresponding consensus information including signature, the nodes can just replay the transactions in that epoch.
+In the moment that the last block of an epoch has been committed by the consensus nodes, the consensus nodes can batch all transactions included in that epoch and form a snapshot on the state at the end of this epoch. The state is given by a snapshot mechanism as desribed in the next section. Non-consensus nodes can then query at pre-defined times the consensus nodes for latest snapshots. Instead of replaying all blocks and their corresponding consensus information including signatures, the nodes can just replay the transactions in that epoch.
 
 # Snapshot mechanism ("Blockchain on Blockchain")
 
