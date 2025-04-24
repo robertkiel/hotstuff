@@ -1,5 +1,5 @@
 use crate::batch_maker::{Batch, Transaction};
-use crate::config::Committee;
+use crate::config::{Committee, Committees};
 use crate::mempool::MempoolMessage;
 use bytes::Bytes;
 use crypto::{generate_keypair, Digest, PublicKey, SecretKey};
@@ -39,7 +39,9 @@ pub fn committee() -> Committee {
 }
 
 // Fixture.
-pub fn committee_with_base_port(base_port: u16) -> Committee {
+pub fn committee_with_base_port(base_port: u16) -> Committees {
+    let mut res = Committees::new();
+
     let mut committee = committee();
     for authority in committee.authorities.values_mut() {
         let port = authority.transactions_address.port();
@@ -48,7 +50,9 @@ pub fn committee_with_base_port(base_port: u16) -> Committee {
         let port = authority.mempool_address.port();
         authority.mempool_address.set_port(base_port + port);
     }
-    committee
+    res.add_committe_for_epoch(committee, 1);
+
+    res
 }
 
 // Fixture

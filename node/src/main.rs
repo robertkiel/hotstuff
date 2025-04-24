@@ -2,14 +2,20 @@ mod config;
 mod node;
 
 use crate::config::Export as _;
-use crate::config::{Committee, Secret};
+use crate::config::{Committees, Secret};
 use crate::node::Node;
 use clap::{Parser, Subcommand};
-use consensus::Committee as ConsensusCommittee;
+use consensus::{
+    Committee as ConsensusCommittee, Committees as ConsensusCommittees,
+    EpochNumber as ConsensusEpochNumber,
+};
 use env_logger::Env;
 use futures::future::join_all;
 use log::error;
-use mempool::Committee as MempoolCommittee;
+use mempool::{
+    Committee as MempoolCommittee, Committees as MempoolCommittees,
+    EpochNumber as MempoolEpochNumber,
+};
 use std::fs;
 use tokio::task::JoinHandle;
 
@@ -51,6 +57,8 @@ enum Command {
     Deploy {
         #[clap(short, long, value_parser = clap::value_parser!(u16).range(4..))]
         nodes: u16,
+        #[clap(short, long, value_parser = clap::value_parser!(u16).range(1..))]
+        epochs: u16,
     },
 }
 
@@ -91,7 +99,7 @@ async fn main() {
             }
             Err(e) => error!("{}", e),
         },
-        Command::Deploy { nodes } => match deploy_testbed(nodes) {
+        Command::Deploy { nodes, epochs } => match deploy_testbed(nodes, epochs) {
             Ok(handles) => {
                 let _ = join_all(handles).await;
             }
@@ -100,41 +108,68 @@ async fn main() {
     }
 }
 
-fn deploy_testbed(nodes: u16) -> Result<Vec<JoinHandle<()>>, Box<dyn std::error::Error>> {
+fn generate_consensus_committees(keys: &Vec<Secret>, epochs: u16) -> ConsensusCommittees {
+    let mut committees = ConsensusCommittees::new();
+    for epoch in 0..epochs {
+        let committee = ConsensusCommittee::new(
+            keys.iter()
+                .enumerate()
+                .map(|(i, key)| {
+                    let name = key.name;
+                    let stake = 1;
+                    let addresses = format!("127.0.0.1:{}", 25_200 + i).parse().unwrap();
+                    (name, stake, addresses)
+                })
+                .collect(),
+            epoch as ConsensusEpochNumber,
+        );
+        committees.add_committe_for_epoch(committee, epoch as ConsensusEpochNumber + 1);
+    }
+
+    committees
+}
+
+fn generate_mempool_committees(keys: &Vec<Secret>, epochs: u16) -> MempoolCommittees {
+    let mut committees = MempoolCommittees::new();
+    for epoch in 0..epochs {
+        let committee = MempoolCommittee::new(
+            keys.iter()
+                .enumerate()
+                .map(|(i, key)| {
+                    let name = key.name;
+                    let stake = 1;
+                    let front = format!("127.0.0.1:{}", 25_000 + i).parse().unwrap();
+                    let mempool = format!("127.0.0.1:{}", 25_100 + i).parse().unwrap();
+                    (name, stake, front, mempool)
+                })
+                .collect(),
+            epoch as MempoolEpochNumber,
+        );
+        committees.add_committe_for_epoch(committee, epoch as ConsensusEpochNumber + 1);
+    }
+
+    committees
+}
+
+fn deploy_testbed(
+    nodes: u16,
+    epochs: u16,
+) -> Result<Vec<JoinHandle<()>>, Box<dyn std::error::Error>> {
     let keys: Vec<_> = (0..nodes).map(|_| Secret::new()).collect();
 
     // Print the committee file.
-    let epoch = 1;
-    let mempool_committee = MempoolCommittee::new(
-        keys.iter()
-            .enumerate()
-            .map(|(i, key)| {
-                let name = key.name;
-                let stake = 1;
-                let front = format!("127.0.0.1:{}", 25_000 + i).parse().unwrap();
-                let mempool = format!("127.0.0.1:{}", 25_100 + i).parse().unwrap();
-                (name, stake, front, mempool)
-            })
-            .collect(),
-        epoch,
-    );
-    let consensus_committee = ConsensusCommittee::new(
-        keys.iter()
-            .enumerate()
-            .map(|(i, key)| {
-                let name = key.name;
-                let stake = 1;
-                let addresses = format!("127.0.0.1:{}", 25_200 + i).parse().unwrap();
-                (name, stake, addresses)
-            })
-            .collect(),
-        epoch,
-    );
     let committee_file = "committee.json";
     let _ = fs::remove_file(committee_file);
-    Committee {
-        mempool: mempool_committee,
-        consensus: consensus_committee,
+
+    let committees = Committees {
+        mempool: generate_mempool_committees(&keys, epochs),
+        consensus: generate_consensus_committees(&keys, epochs),
+    };
+
+    println!("committees {committees:?}");
+    Committees {
+        mempool: generate_mempool_committees(&keys, epochs),
+        consensus: generate_consensus_committees(&keys, epochs),
     }
     .write(committee_file)?;
 

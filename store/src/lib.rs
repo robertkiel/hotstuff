@@ -12,6 +12,8 @@ type StoreResult<T> = Result<T, StoreError>;
 type Key = Vec<u8>;
 type Value = Vec<u8>;
 
+pub const EPOCH_KEY: &[u8] = "epoch".as_bytes();
+
 pub enum StoreCommand {
     Write(Key, Value),
     Read(Key, oneshot::Sender<StoreResult<Option<Value>>>),

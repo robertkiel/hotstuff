@@ -1,5 +1,5 @@
 use super::*;
-use crate::common::{block, chain, committee, committee_with_base_port, keys, listener};
+use crate::common::{block, chain, committee, committees_with_base_port, keys, listener};
 use std::fs;
 
 #[tokio::test]
@@ -16,12 +16,15 @@ async fn get_existing_parent_block() {
     let value = bincode::serialize(&b2).unwrap();
     let _ = store.write(key, value).await;
 
+    let mut committees = Committees::new();
+    committees.add_committe_for_epoch(committee(), 1);
+
     // Make a new synchronizer.
     let (name, _) = keys().pop().unwrap();
     let (tx_loopback, _) = channel(10);
     let mut synchronizer = Synchronizer::new(
         name,
-        committee(),
+        committees,
         store,
         tx_loopback,
         /* sync_retry_delay */ 10_000,
@@ -42,9 +45,13 @@ async fn get_genesis_parent_block() {
     let store = Store::new(path).unwrap();
     let (name, _) = keys().pop().unwrap();
     let (tx_loopback, _) = channel(1);
+
+    let mut committees = Committees::new();
+    committees.add_committe_for_epoch(committee(), 1);
+
     let mut synchronizer = Synchronizer::new(
         name,
-        committee(),
+        committees,
         store,
         tx_loopback,
         /* sync_retry_delay */ 10_000,
@@ -59,7 +66,7 @@ async fn get_genesis_parent_block() {
 
 #[tokio::test]
 async fn get_missing_parent_block() {
-    let committee = committee_with_base_port(12_000);
+    let committees = committees_with_base_port(12_000);
     let mut chain = chain(keys());
     let block = chain.pop().unwrap();
     let parent_block = chain.pop().unwrap();
@@ -72,14 +79,18 @@ async fn get_missing_parent_block() {
     let (tx_loopback, mut rx_loopback) = channel(1);
     let mut synchronizer = Synchronizer::new(
         name,
-        committee.clone(),
+        committees.clone(),
         store.clone(),
         tx_loopback,
         /* sync_retry_delay */ 10_000,
     );
 
+    let initial_committee = committees
+        .get_committee_for_epoch(&1)
+        .expect("Missing committee");
+
     // Spawn a listener to receive our sync request.
-    let address = committee.address(&block.author).unwrap();
+    let address = initial_committee.address(&block.author).unwrap();
     let message = ConsensusMessage::SyncRequest(parent_block.digest(), name);
     let expected = Bytes::from(bincode::serialize(&message).unwrap());
     let listener_handle = listener(address, Some(expected.clone()));

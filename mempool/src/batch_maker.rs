@@ -1,5 +1,7 @@
+use crate::config::epoch_number_from_bytes;
 use crate::mempool::MempoolMessage;
 use crate::quorum_waiter::QuorumWaiterMessage;
+use crate::Committees;
 use bytes::Bytes;
 #[cfg(feature = "benchmark")]
 use crypto::Digest;
@@ -11,7 +13,7 @@ use log::info;
 use network::ReliableSender;
 #[cfg(feature = "benchmark")]
 use std::convert::TryInto as _;
-use std::net::SocketAddr;
+use store::{Store, EPOCH_KEY};
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::time::{sleep, Duration, Instant};
 
@@ -32,14 +34,18 @@ pub struct BatchMaker {
     rx_transaction: Receiver<Transaction>,
     /// Output channel to deliver sealed batches to the `QuorumWaiter`.
     tx_message: Sender<QuorumWaiterMessage>,
-    /// The network addresses of the other mempools.
-    mempool_addresses: Vec<(PublicKey, SocketAddr)>,
     /// Holds the current batch.
     current_batch: Batch,
     /// Holds the size of the current batch (in bytes).
     current_batch_size: usize,
     /// A network sender to broadcast the batches to the other mempools.
     network: ReliableSender,
+    /// DB access to retrieve current epoch
+    store: Store,
+    /// All known mempool committees
+    committees: Committees,
+    /// Own public key
+    name: PublicKey,
 }
 
 impl BatchMaker {
@@ -48,7 +54,9 @@ impl BatchMaker {
         max_batch_delay: u64,
         rx_transaction: Receiver<Transaction>,
         tx_message: Sender<QuorumWaiterMessage>,
-        mempool_addresses: Vec<(PublicKey, SocketAddr)>,
+        committees: Committees,
+        store: Store,
+        name: PublicKey,
     ) {
         tokio::spawn(async move {
             Self {
@@ -56,7 +64,9 @@ impl BatchMaker {
                 max_batch_delay,
                 rx_transaction,
                 tx_message,
-                mempool_addresses,
+                store,
+                committees,
+                name,
                 current_batch: Batch::with_capacity(batch_size * 2),
                 current_batch_size: 0,
                 network: ReliableSender::new(),
@@ -139,8 +149,24 @@ impl BatchMaker {
             info!("Batch {:?} contains {} B", digest, size);
         }
 
+        let epoch = epoch_number_from_bytes(
+            self.store
+                .read(EPOCH_KEY.into())
+                .await
+                .expect("Failed to read from store")
+                .expect("Missing epoch entry")
+                .as_slice(),
+        );
+
         // Broadcast the batch through the network.
-        let (names, addresses): (Vec<_>, _) = self.mempool_addresses.iter().cloned().unzip();
+        let (names, addresses): (Vec<_>, _) = self
+            .committees
+            .get_committee_for_epoch(&epoch)
+            .expect("Missing mempool committee")
+            .broadcast_addresses(&self.name)
+            .iter()
+            .cloned()
+            .unzip();
         let bytes = Bytes::from(serialized.clone());
         let handlers = self.network.broadcast(addresses, bytes).await;
 

@@ -1,12 +1,24 @@
 use super::*;
-use crate::common::transaction;
+use crate::common::{committee_with_base_port, keys, transaction};
+use std::fs;
 use tokio::sync::mpsc::channel;
 
 #[tokio::test]
 async fn make_batch() {
     let (tx_transaction, rx_transaction) = channel(1);
     let (tx_message, mut rx_message) = channel(1);
-    let dummy_addresses = vec![(PublicKey::default(), "127.0.0.1:0".parse().unwrap())];
+    let (myself, _) = keys().pop().unwrap();
+
+    // Create a new test store.
+    let path = ".db_make_batch";
+    let _ = fs::remove_dir_all(path);
+    let mut store = Store::new(path).unwrap();
+
+    store
+        .write(EPOCH_KEY.into(), (1u128.to_be_bytes()).into())
+        .await;
+
+    let committees = committee_with_base_port(7_000);
 
     // Spawn a `BatchMaker` instance.
     BatchMaker::spawn(
@@ -14,7 +26,9 @@ async fn make_batch() {
         /* max_batch_delay */ 1_000_000, // Ensure the timer is not triggered.
         rx_transaction,
         tx_message,
-        /* mempool_addresses */ dummy_addresses,
+        committees,
+        store,
+        myself,
     );
 
     // Send enough transactions to seal a batch.
@@ -34,7 +48,18 @@ async fn make_batch() {
 async fn batch_timeout() {
     let (tx_transaction, rx_transaction) = channel(1);
     let (tx_message, mut rx_message) = channel(1);
-    let dummy_addresses = vec![(PublicKey::default(), "127.0.0.1:0".parse().unwrap())];
+    let (myself, _) = keys().pop().unwrap();
+
+    // Create a new test store.
+    let path = ".db_test_batch_timeout";
+    let _ = fs::remove_dir_all(path);
+    let mut store = Store::new(path).unwrap();
+
+    store
+        .write(EPOCH_KEY.into(), (1u128.to_be_bytes()).into())
+        .await;
+
+    let committees = committee_with_base_port(7_000);
 
     // Spawn a `BatchMaker` instance.
     BatchMaker::spawn(
@@ -42,7 +67,9 @@ async fn batch_timeout() {
         /* max_batch_delay */ 50, // Ensure the timer is triggered.
         rx_transaction,
         tx_message,
-        /* mempool_addresses */ dummy_addresses,
+        committees,
+        store,
+        myself,
     );
 
     // Do not send enough transactions to seal a batch..

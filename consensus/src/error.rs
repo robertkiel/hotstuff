@@ -1,4 +1,4 @@
-use crate::consensus::Round;
+use crate::{config::EpochNumber, consensus::Round};
 use crypto::{CryptoError, Digest, PublicKey};
 use store::StoreError;
 use thiserror::Error;
@@ -62,4 +62,19 @@ pub enum ConsensusError {
 
     #[error("Invalid payload")]
     InvalidPayload,
+
+    #[error("Block epoch {0} does not match committee epoch {1}")]
+    InvalidEpoch(EpochNumber, EpochNumber),
+
+    #[error("Unknown committee for epoch {0}")]
+    UnknownCommittee(EpochNumber),
+
+    #[error("Epoch {0} got concluded but epoch counter was not bumped")]
+    MissingEpochBumpAfterEpochChange(EpochNumber),
+
+    #[error("Epoch {0} got concluded but round counter was not reset")]
+    MissingRoundsResetAfterEpochChange(EpochNumber),
+
+    #[error("Invalid snapshot")]
+    InvalidSnapshot,
 }

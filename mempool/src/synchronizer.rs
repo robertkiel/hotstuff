@@ -1,4 +1,4 @@
-use crate::config::Committee;
+use crate::config::{epoch_number_from_bytes, Committees};
 use crate::mempool::{ConsensusMempoolMessage, MempoolMessage, Round};
 use bytes::Bytes;
 use crypto::{Digest, PublicKey};
@@ -8,7 +8,7 @@ use log::{debug, error};
 use network::SimpleSender;
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
-use store::{Store, StoreError};
+use store::{Store, StoreError, EPOCH_KEY};
 use tokio::sync::mpsc::{channel, Receiver, Sender};
 use tokio::time::{sleep, Duration, Instant};
 
@@ -24,7 +24,7 @@ pub struct Synchronizer {
     /// The public key of this authority.
     name: PublicKey,
     /// The committee information.
-    committee: Committee,
+    committees: Committees,
     // The persistent storage.
     store: Store,
     /// The depth of the garbage collection.
@@ -50,7 +50,7 @@ impl Synchronizer {
     #[allow(clippy::too_many_arguments)]
     pub fn spawn(
         name: PublicKey,
-        committee: Committee,
+        committees: Committees,
         store: Store,
         gc_depth: Round,
         sync_retry_delay: u64,
@@ -60,7 +60,7 @@ impl Synchronizer {
         tokio::spawn(async move {
             Self {
                 name,
-                committee,
+                committees,
                 store,
                 gc_depth,
                 sync_retry_delay,
@@ -127,9 +127,11 @@ impl Synchronizer {
                             self.pending.insert(digest, (self.round, tx_cancel, now));
                         }
 
+                        let epoch = epoch_number_from_bytes(self.store.read(EPOCH_KEY.into()).await.expect("Failed to read from store").expect("Missing epoch key in store").as_slice());
+
                         // Send sync request to a single node. If this fails, we will send it
                         // to other nodes when a timer times out.
-                        let address = match self.committee.mempool_address(&target) {
+                        let address = match self.committees.get_committee_for_epoch(&epoch).expect("Missing committee for epoch {epoch}").mempool_address(&target) {
                             Some(address) => address,
                             None => {
                                 error!("Consensus asked us to sync with an unknown node: {}", target);
@@ -181,6 +183,8 @@ impl Synchronizer {
                         .expect("Failed to measure time")
                         .as_millis();
 
+                    let epoch = epoch_number_from_bytes(self.store.read(EPOCH_KEY.into()).await.expect("Failed to read from store").expect("Missing epoch key in store").as_slice());
+
                     let mut retry = Vec::new();
                     for (digest, (_, _, timestamp)) in &self.pending {
                         if timestamp + (self.sync_retry_delay as u128) < now {
@@ -188,8 +192,10 @@ impl Synchronizer {
                             retry.push(digest.clone());
                         }
                     }
+
+
                     if !retry.is_empty() {
-                        let addresses = self.committee
+                        let addresses = self.committees.get_committee_for_epoch(&epoch).expect("Missing committee for epoch {epoch}")
                             .broadcast_addresses(&self.name)
                             .iter()
                             .map(|(_, address)| *address)

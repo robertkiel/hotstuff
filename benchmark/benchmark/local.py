@@ -43,7 +43,7 @@ class LocalBench:
 
         try:
             Print.info('Setting up testbed...')
-            nodes, rate = self.nodes[0], self.rate[0]
+            nodes, rate, epochs = self.nodes[0], self.rate[0], self.epochs[0]
 
             # Cleanup all files.
             cmd = f'{CommandMaker.clean_logs()} ; {CommandMaker.cleanup()}'
@@ -67,7 +67,8 @@ class LocalBench:
                 keys += [Key.from_file(filename)]
 
             names = [x.name for x in keys]
-            committee = LocalCommittee(names, self.BASE_PORT)
+            epochs = [f'{i+1}' for i in range(0, epochs)]
+            committee = LocalCommittee(epochs, names, self.BASE_PORT)
             committee.print(PathMaker.committee_file())
 
             self.node_parameters.print(PathMaker.parameters_file())

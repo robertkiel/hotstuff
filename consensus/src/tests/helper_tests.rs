@@ -1,5 +1,5 @@
 use super::*;
-use crate::common::{block, committee_with_base_port, keys, listener};
+use crate::common::{block, committees_with_base_port, keys, listener};
 use crypto::Hash as _;
 use std::fs;
 use tokio::sync::mpsc::channel;
@@ -8,7 +8,7 @@ use tokio::sync::mpsc::channel;
 async fn sync_reply() {
     let (tx_request, rx_request) = channel(1);
     let (requestor, _) = keys().pop().unwrap();
-    let committee = committee_with_base_port(13_000);
+    let committees = committees_with_base_port(13_000);
 
     // Create a new test store.
     let path = ".db_test_sync_reply";
@@ -21,10 +21,14 @@ async fn sync_reply() {
     store.write(digest.to_vec(), serialized.clone()).await;
 
     // Spawn an `Helper` instance.
-    Helper::spawn(committee.clone(), store, rx_request);
+    Helper::spawn(committees.clone(), store, rx_request);
+
+    let initial_committee = committees
+        .get_committee_for_epoch(&1)
+        .expect("Missing committee");
 
     // Spawn a listener to receive the sync reply.
-    let address = committee.address(&requestor).unwrap();
+    let address = initial_committee.address(&requestor).unwrap();
     let message = ConsensusMessage::Propose(block());
     let expected = Bytes::from(bincode::serialize(&message).unwrap());
     let handle = listener(address, Some(expected));

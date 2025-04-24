@@ -1,5 +1,5 @@
 use super::*;
-use crate::common::{chain, committee, committee_with_base_port, keys, listener};
+use crate::common::{chain, committee, committees_with_base_port, keys, listener};
 use crypto::SecretKey;
 use futures::future::try_join_all;
 use std::fs;
@@ -8,7 +8,7 @@ use tokio::sync::mpsc::channel;
 fn core(
     name: PublicKey,
     secret: SecretKey,
-    committee: Committee,
+    committees: Committees,
     store_path: &str,
 ) -> (
     Sender<ConsensusMessage>,
@@ -24,11 +24,11 @@ fn core(
     let signature_service = SignatureService::new(secret);
     let _ = fs::remove_dir_all(store_path);
     let store = Store::new(store_path).unwrap();
-    let leader_elector = LeaderElector::new(committee.clone());
+    let leader_elector = LeaderElector::new(committees.clone());
     let mempool_driver = MempoolDriver::new(store.clone(), tx_mempool, tx_loopback.clone());
     let synchronizer = Synchronizer::new(
         name,
-        committee.clone(),
+        committees.clone(),
         store.clone(),
         tx_loopback,
         /* sync_retry_delay */ 100_000,
@@ -42,7 +42,10 @@ fn core(
 
     Core::spawn(
         name,
-        committee,
+        committees,
+        1,
+        None,
+        None,
         signature_service,
         store,
         leader_elector,
@@ -59,8 +62,11 @@ fn core(
 }
 
 fn leader_keys(round: Round) -> (PublicKey, SecretKey) {
-    let leader_elector = LeaderElector::new(committee());
-    let leader = leader_elector.get_leader(round);
+    let mut committees = Committees::new();
+    committees.add_committe_for_epoch(committee(), 1);
+
+    let leader_elector = LeaderElector::new(committees);
+    let leader = leader_elector.get_leader(1, round);
     keys()
         .into_iter()
         .find(|(public_key, _)| *public_key == leader)
@@ -69,26 +75,38 @@ fn leader_keys(round: Round) -> (PublicKey, SecretKey) {
 
 #[tokio::test]
 async fn handle_proposal() {
-    let committee = committee_with_base_port(16_000);
+    let committees = committees_with_base_port(16_000);
 
     // Make a block and the vote we expect to receive.
     let block = chain(vec![leader_keys(1)]).pop().unwrap();
     let (public_key, secret_key) = keys().pop().unwrap();
-    let vote = Vote::new_from_key(block.digest(), block.round, public_key, &secret_key);
+    let vote = Vote::new_from_key(
+        block.digest(),
+        block.round,
+        public_key,
+        1,
+        false,
+        block.snapshot.to_owned(),
+        &secret_key,
+    );
     let expected = bincode::serialize(&ConsensusMessage::Vote(vote)).unwrap();
 
     // Run a core instance.
     let store_path = ".db_test_handle_proposal";
     let (tx_core, _rx_proposer, _rx_commit) =
-        core(public_key, secret_key, committee.clone(), store_path);
+        core(public_key, secret_key, committees.clone(), store_path);
 
     // Send a block to the core.
     let message = ConsensusMessage::Propose(block.clone());
     tx_core.send(message).await.unwrap();
 
+    let initial_committee = committees
+        .get_committee_for_epoch(&1)
+        .expect("Missing committee");
+
     // Ensure the next leaders gets the vote.
     let (next_leader, _) = leader_keys(2);
-    let address = committee.address(&next_leader).unwrap();
+    let address = initial_committee.address(&next_leader).unwrap();
     let handle = listener(address, Some(Bytes::from(expected)));
     assert!(handle.await.is_ok());
 }
@@ -100,17 +118,37 @@ async fn generate_proposal() {
     let (next_leader, next_leader_key) = leader_keys(2);
 
     // Make a block, votes, and QC.
-    let block = Block::new_from_key(QC::genesis(), leader, 1, Vec::new(), &leader_key);
+    let block = Block::new_from_key(
+        QC::genesis(),
+        leader,
+        1,
+        Vec::new(),
+        1,
+        false,
+        Digest::default(),
+        &leader_key,
+    );
     let hash = block.digest();
     let votes: Vec<_> = keys()
         .iter()
         .map(|(public_key, secret_key)| {
-            Vote::new_from_key(hash.clone(), block.round, *public_key, &secret_key)
+            Vote::new_from_key(
+                hash.clone(),
+                block.round,
+                *public_key,
+                1,
+                false,
+                Digest::default(),
+                &secret_key,
+            )
         })
         .collect();
     let hight_qc = QC {
         hash,
         round: block.round,
+        epoch: block.epoch,
+        epoch_concluded: block.epoch_concluded,
+        last_snapshot: Digest::default(),
         votes: votes
             .iter()
             .cloned()
@@ -118,10 +156,13 @@ async fn generate_proposal() {
             .collect(),
     };
 
+    let mut committees = Committees::new();
+    committees.add_committe_for_epoch(committee(), 1);
+
     // Run a core instance.
     let store_path = ".db_test_generate_proposal";
     let (tx_core, mut rx_proposer, _rx_commit) =
-        core(next_leader, next_leader_key, committee(), store_path);
+        core(next_leader, next_leader_key, committees, store_path);
 
     // Send all votes to the core.
     for vote in votes.clone() {
@@ -131,10 +172,11 @@ async fn generate_proposal() {
 
     // Ensure the core sends a new block.
     match rx_proposer.recv().await.unwrap() {
-        ProposerMessage::Make(round, qc, tc) => {
+        ProposerMessage::Make(1, round, qc, tc, last_snapshot) => {
             assert_eq!(round, 2);
             assert_eq!(qc, hight_qc);
             assert!(tc.is_none());
+            assert_eq!(Digest::default(), last_snapshot);
         }
         _ => panic!("Unexpected protocol message"),
     }
@@ -149,8 +191,12 @@ async fn commit_block() {
     // Run a core instance.
     let store_path = ".db_test_commit_block";
     let (public_key, secret_key) = keys().pop().unwrap();
+
+    let mut committees = Committees::new();
+    committees.add_committe_for_epoch(committee(), 1);
+
     let (tx_core, mut rx_proposer, mut rx_commit) =
-        core(public_key, secret_key, committee(), store_path);
+        core(public_key, secret_key, committees, store_path);
 
     // Send a the blocks to the core.
     let committed = chain[0].clone();
@@ -170,20 +216,32 @@ async fn commit_block() {
 
 #[tokio::test]
 async fn local_timeout_round() {
-    let committee = committee_with_base_port(16_100);
+    let committees = committees_with_base_port(16_100);
 
     // Make the timeout vote we expect to send.
     let (public_key, secret_key) = leader_keys(3);
-    let timeout = Timeout::new_from_key(QC::genesis(), 1, public_key, &secret_key);
+    let timeout = Timeout::new_from_key(
+        QC::genesis(),
+        1,
+        public_key,
+        1,
+        false,
+        Digest::default(),
+        &secret_key,
+    );
     let expected = bincode::serialize(&ConsensusMessage::Timeout(timeout)).unwrap();
 
     // Run a core instance.
     let store_path = ".db_test_local_timeout_round";
     let (_tx_core, _rx_proposer, _rx_commit) =
-        core(public_key, secret_key, committee.clone(), store_path);
+        core(public_key, secret_key, committees.clone(), store_path);
+
+    let initial_committee = committees
+        .get_committee_for_epoch(&1)
+        .expect("Missing commttee");
 
     // Ensure the node broadcasts a timeout vote.
-    let handles: Vec<_> = committee
+    let handles: Vec<_> = initial_committee
         .broadcast_addresses(&public_key)
         .into_iter()
         .map(|(_, address)| listener(address, Some(Bytes::from(expected.clone()))))

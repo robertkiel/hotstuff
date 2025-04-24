@@ -1,4 +1,4 @@
-use crate::config::{Committee, Parameters};
+use crate::config::{Committees, Parameters};
 use crate::core::Core;
 use crate::error::ConsensusError;
 use crate::helper::Helper;
@@ -7,6 +7,7 @@ use crate::mempool::MempoolDriver;
 use crate::messages::{Block, Timeout, Vote, TC};
 use crate::proposer::Proposer;
 use crate::synchronizer::Synchronizer;
+use crate::EpochNumber;
 use async_trait::async_trait;
 use bytes::Bytes;
 use crypto::{Digest, PublicKey, SignatureService};
@@ -44,7 +45,10 @@ impl Consensus {
     #[allow(clippy::too_many_arguments)]
     pub fn spawn(
         name: PublicKey,
-        committee: Committee,
+        committees: Committees,
+        epoch: EpochNumber,
+        epoch_len: Option<u64>,
+        snapshot: Option<Digest>,
         parameters: Parameters,
         signature_service: SignatureService,
         store: Store,
@@ -61,7 +65,9 @@ impl Consensus {
         let (tx_helper, rx_helper) = channel(CHANNEL_CAPACITY);
 
         // Spawn the network receiver.
-        let mut address = committee
+        let mut address = committees
+            .get_committee_for_epoch(&1)
+            .expect("Missing consensus committee for first epoch")
             .address(&name)
             .expect("Our public key is not in the committee");
         address.set_ip("0.0.0.0".parse().unwrap());
@@ -79,7 +85,7 @@ impl Consensus {
         );
 
         // Make the leader election module.
-        let leader_elector = LeaderElector::new(committee.clone());
+        let leader_elector = LeaderElector::new(committees.clone());
 
         // Make the mempool driver.
         let mempool_driver = MempoolDriver::new(store.clone(), tx_mempool, tx_loopback.clone());
@@ -87,7 +93,7 @@ impl Consensus {
         // Make the synchronizer.
         let synchronizer = Synchronizer::new(
             name,
-            committee.clone(),
+            committees.clone(),
             store.clone(),
             tx_loopback.clone(),
             parameters.sync_retry_delay,
@@ -96,7 +102,10 @@ impl Consensus {
         // Spawn the consensus core.
         Core::spawn(
             name,
-            committee.clone(),
+            committees.clone(),
+            epoch,
+            epoch_len,
+            snapshot,
             signature_service.clone(),
             store.clone(),
             leader_elector,
@@ -112,7 +121,7 @@ impl Consensus {
         // Spawn the block proposer.
         Proposer::spawn(
             name,
-            committee.clone(),
+            committees.clone(),
             signature_service,
             rx_mempool,
             /* rx_message */ rx_proposer,
@@ -120,7 +129,7 @@ impl Consensus {
         );
 
         // Spawn the helper module.
-        Helper::spawn(committee, store, /* rx_requests */ rx_helper);
+        Helper::spawn(committees, store, /* rx_requests */ rx_helper);
     }
 }
 

@@ -1,11 +1,12 @@
 use std::time::Duration;
 
-use crate::config::{Committee, Stake};
+use crate::config::{epoch_number_from_bytes, Committees, Stake};
 use crate::processor::SerializedBatchMessage;
 use crypto::PublicKey;
 use futures::stream::futures_unordered::FuturesUnordered;
 use futures::stream::StreamExt as _;
 use network::CancelHandler;
+use store::{Store, EPOCH_KEY};
 use tokio::{
     sync::mpsc::{Receiver, Sender},
     time::sleep,
@@ -30,10 +31,12 @@ pub struct QuorumWaiterMessage {
 
 /// The QuorumWaiter waits for 2f authorities to acknowledge reception of a batch.
 pub struct QuorumWaiter {
-    /// The committee information.
-    committee: Committee,
-    /// The stake of this authority.
-    stake: Stake,
+    /// The list of committees.
+    committees: Committees,
+    /// DB access to retrieve epoch
+    store: Store,
+    /// Own public key
+    name: PublicKey,
     /// Input Channel to receive commands.
     rx_message: Receiver<QuorumWaiterMessage>,
     /// Channel to deliver batches for which we have enough acknowledgements.
@@ -43,15 +46,17 @@ pub struct QuorumWaiter {
 impl QuorumWaiter {
     /// Spawn a new QuorumWaiter.
     pub fn spawn(
-        committee: Committee,
-        stake: Stake,
+        committees: Committees,
+        store: Store,
+        name: PublicKey,
         rx_message: Receiver<QuorumWaiterMessage>,
         tx_batch: Sender<Vec<u8>>,
     ) {
         tokio::spawn(async move {
             Self {
-                committee,
-                stake,
+                committees,
+                store,
+                name,
                 rx_message,
                 tx_batch,
             }
@@ -78,10 +83,21 @@ impl QuorumWaiter {
         loop {
             tokio::select! {
                 Some(QuorumWaiterMessage { batch, handlers }) = self.rx_message.recv() => {
+                    let epoch = epoch_number_from_bytes(
+                        self.store
+                            .read(EPOCH_KEY.into())
+                            .await
+                            .expect("Failed to read from store")
+                            .expect("Missing epoch entry")
+                            .as_slice(),
+                    );
+
+                    let current_committee = self.committees.get_committee_for_epoch(&epoch).expect("Missing committee for epoch {epoch}");
+
                     let mut wait_for_quorum: FuturesUnordered<_> = handlers
                         .into_iter()
                         .map(|(name, handler)| {
-                            let stake = self.committee.stake(&name);
+                            let stake = current_committee.stake(&name);
                             Self::waiter(handler, stake)
                         })
                         .collect();
@@ -89,10 +105,10 @@ impl QuorumWaiter {
                     // Wait for the first 2f nodes to send back an Ack. Then we consider the batch
                     // delivered and we send its digest to the consensus (that will include it into
                     // the dag). This should reduce the amount of synching.
-                    let mut total_stake = self.stake;
+                    let mut total_stake = current_committee.stake(&self.name);
                     while let Some(stake) = wait_for_quorum.next().await {
                         total_stake += stake;
-                        if total_stake >= self.committee.quorum_threshold() {
+                        if total_stake >= current_committee.quorum_threshold() {
                             self.tx_batch
                                 .send(batch)
                                 .await
